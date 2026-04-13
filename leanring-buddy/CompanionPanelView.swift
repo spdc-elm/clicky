@@ -154,6 +154,31 @@ struct CompanionPanelView: View {
                     .background(inputBackground)
             }
 
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Context Turns")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                TextField(
+                    "4",
+                    value: Binding(
+                        get: { settingsStore.conversationContextTurnLimit },
+                        set: { settingsStore.conversationContextTurnLimit = $0 }
+                    ),
+                    format: .number
+                )
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .foregroundColor(DS.Colors.textPrimary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(inputBackground)
+
+                helperCopy(
+                    "Controls how many completed turns Clicky sends as AI context and previews in Session Context. Full session archives keep every saved turn."
+                )
+            }
+
             if !companionManager.hasScreenRecordingPermission {
                 permissionWarning
             } else if !settingsStore.isConfigurationComplete {

@@ -14,21 +14,24 @@ final class ClickySettingsStore: ObservableObject {
     private enum UserDefaultsKey {
         static let endpointURLString = "clicky.endpointURLString"
         static let modelID = "clicky.modelID"
+        static let conversationContextTurnLimit = "clicky.conversationContextTurnLimit"
     }
 
     private enum KeychainAccount {
         static let apiKey = "clicky.apiKey"
     }
 
+    static let defaultConversationContextTurnLimit = 4
+
     @Published var endpointURLString: String {
         didSet {
-            UserDefaults.standard.set(endpointURLString, forKey: UserDefaultsKey.endpointURLString)
+            userDefaults.set(endpointURLString, forKey: UserDefaultsKey.endpointURLString)
         }
     }
 
     @Published var modelID: String {
         didSet {
-            UserDefaults.standard.set(modelID, forKey: UserDefaultsKey.modelID)
+            userDefaults.set(modelID, forKey: UserDefaultsKey.modelID)
         }
     }
 
@@ -38,13 +41,39 @@ final class ClickySettingsStore: ObservableObject {
         }
     }
 
+    @Published var conversationContextTurnLimit: Int {
+        didSet {
+            let normalizedConversationContextTurnLimit = Self.normalizedConversationContextTurnLimit(
+                from: conversationContextTurnLimit
+            )
+
+            if conversationContextTurnLimit != normalizedConversationContextTurnLimit {
+                conversationContextTurnLimit = normalizedConversationContextTurnLimit
+                return
+            }
+
+            userDefaults.set(
+                normalizedConversationContextTurnLimit,
+                forKey: UserDefaultsKey.conversationContextTurnLimit
+            )
+        }
+    }
+
+    private let userDefaults: UserDefaults
     private let keychainSecretStore: KeychainSecretStore
 
-    init(keychainSecretStore: KeychainSecretStore? = nil) {
+    init(
+        userDefaults: UserDefaults = .standard,
+        keychainSecretStore: KeychainSecretStore? = nil
+    ) {
+        self.userDefaults = userDefaults
         self.keychainSecretStore = keychainSecretStore ?? KeychainSecretStore()
-        self.endpointURLString = UserDefaults.standard.string(forKey: UserDefaultsKey.endpointURLString) ?? ""
-        self.modelID = UserDefaults.standard.string(forKey: UserDefaultsKey.modelID) ?? "claude-sonnet-4-6"
+        self.endpointURLString = userDefaults.string(forKey: UserDefaultsKey.endpointURLString) ?? ""
+        self.modelID = userDefaults.string(forKey: UserDefaultsKey.modelID) ?? "claude-sonnet-4-6"
         self.apiKey = self.keychainSecretStore.readSecret(for: KeychainAccount.apiKey)
+        self.conversationContextTurnLimit = Self.normalizedConversationContextTurnLimit(
+            from: userDefaults.object(forKey: UserDefaultsKey.conversationContextTurnLimit) as? Int
+        )
     }
 
     var trimmedEndpointURLString: String {
@@ -88,5 +117,13 @@ final class ClickySettingsStore: ObservableObject {
         }
 
         return components.url
+    }
+
+    static func normalizedConversationContextTurnLimit(from conversationContextTurnLimit: Int?) -> Int {
+        guard let conversationContextTurnLimit else {
+            return defaultConversationContextTurnLimit
+        }
+
+        return max(1, conversationContextTurnLimit)
     }
 }

@@ -5,7 +5,7 @@
 
 ## Overview
 
-macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a compact settings panel. A user-configured global shortcut opens a centered prompt composer, and sending captures the current cursor screen, streams an Anthropic-compatible response into a floating text panel, and keeps the blue cursor buddy available for on-screen pointing.
+macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a compact settings panel. A user-configured global shortcut opens a centered prompt composer with a session context preview, persistent session restore flow, and archived conversation history; sending captures the current cursor screen, streams an Anthropic-compatible response into a floating text panel, and keeps the blue cursor buddy available for on-screen pointing.
 
 API credentials are stored locally in Keychain. The app can talk directly to an Anthropic-compatible endpoint. The Cloudflare Worker remains in the repo as an optional proxy, not a runtime requirement.
 
@@ -17,11 +17,12 @@ API credentials are stored locally in Keychain. The app can talk directly to an 
 - **AI Chat**: Anthropic-compatible Messages API with SSE streaming, configurable endpoint/model/API key
 - **Shortcut Handling**: Global shortcut registration and recording via `KeyboardShortcuts`
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), current cursor screen only
-- **Input UX**: Centered prompt composer overlay with multiline text input
+- **Input UX**: Centered prompt composer overlay with a session context sidebar, restorable session chooser, history detail panel, and multiline text input
 - **Response UX**: Scrollable floating response panel anchored bottom-center by default, with top fallback when lower-screen content would be obscured
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
 - **Analytics**: PostHog via `ClickyAnalytics.swift`
+- **Session Persistence**: Completed conversation turns are archived as JSON session files under Application Support, separate from the in-memory AI context window.
 
 ### Optional API Proxy
 
@@ -40,7 +41,9 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 
 **Cursor Overlay**: A full-screen transparent `NSPanel` hosts the blue cursor companion. It's non-activating, joins all Spaces, and never steals focus. The cursor follows the mouse, shows a spinner while Clicky is processing, and animates to pointed elements returned by the model.
 
-**Composer-First Workflow**: The primary action is opening a centered prompt composer, writing a question, and sending it with an automatic screenshot of the current cursor screen. This keeps the interaction low-friction for code and terminal explanation workflows without relying on built-in voice capture.
+**Composer-First Workflow**: The primary action is opening a centered prompt composer, optionally choosing whether to resume the previous archived session, reviewing the recent completed turns that will be sent as context, writing a question, and sending it with an automatic screenshot of the current cursor screen. This keeps the interaction low-friction for code and terminal explanation workflows without relying on built-in voice capture.
+
+**Session Archive Split**: Clicky now separates the persistent session archive from the transient AI context window. Full completed turns are saved as JSON session events, while only the most recent configured turns are shown in the composer sidebar and sent back to the model.
 
 **Direct Endpoint Configuration**: Endpoint URL, API key, and model ID are configured at runtime. The API key is stored in Keychain, while the endpoint and model are stored in `UserDefaults`.
 
@@ -49,11 +52,12 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~50 | Menu bar app entry point. Creates `CompanionManager`, launches the cursor overlay, and auto-opens the settings panel when configuration is incomplete. |
-| `CompanionManager.swift` | ~338 | Central text-first state machine. Owns prompt composer flow, direct Claude request configuration, screenshot capture, response streaming, conversation history, and pointing state. |
-| `PromptComposerOverlay.swift` | ~332 | Centered prompt composer overlay built with a key-capable `NSPanel` and a custom multiline `NSTextView` bridge. |
+| `CompanionManager.swift` | ~657 | Central text-first state machine. Owns prompt composer flow, session restore/new-session behavior, JSON-backed archive integration, screenshot capture, response streaming, context-window derivation, and pointing state. |
+| `PromptComposerOverlay.swift` | ~772 | Centered prompt composer overlay built with a key-capable `NSPanel`, a clickable session history sidebar, a restore chooser, a full-turn detail panel, and a custom multiline `NSTextView` bridge. |
 | `CompanionResponseOverlay.swift` | ~295 | Scrollable floating response panel that streams text, supports manual scrolling, and anchors bottom-center or top-center based on screen context. |
 | `MenuBarPanelManager.swift` | ~236 | NSStatusItem + custom NSPanel lifecycle for the settings dropdown. |
-| `CompanionPanelView.swift` | ~272 | SwiftUI settings panel. Edits endpoint URL, API key, model ID, and the global shortcut, and surfaces Screen Recording status. |
+| `CompanionPanelView.swift` | ~297 | SwiftUI settings panel. Edits endpoint URL, API key, model ID, context turn count, and the global shortcut, and surfaces Screen Recording status. |
+| `SessionArchiveStore.swift` | ~231 | JSON-backed session persistence layer. Stores active session metadata in `UserDefaults` and full completed conversation turns in Application Support archives. |
 | `OverlayWindow.swift` | ~392 | Full-screen transparent overlay hosting the blue cursor, processing spinner, and pointing animation. |
 | `CompanionScreenCaptureUtility.swift` | ~96 | Captures the current cursor screen with ScreenCaptureKit while excluding Clicky's own windows. |
 | `ClaudeAPI.swift` | ~166 | Anthropic-compatible SSE client with runtime endpoint/API key/model configuration and TLS warmup. |
