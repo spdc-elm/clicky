@@ -56,7 +56,7 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `PromptComposerOverlay.swift` | ~772 | Centered prompt composer overlay built with a key-capable `NSPanel`, a clickable session history sidebar, a restore chooser, a full-turn detail panel, and a custom multiline `NSTextView` bridge. |
 | `CompanionResponseOverlay.swift` | ~295 | Scrollable floating response panel that streams text, supports manual scrolling, and anchors bottom-center or top-center based on screen context. |
 | `MenuBarPanelManager.swift` | ~236 | NSStatusItem + custom NSPanel lifecycle for the settings dropdown. |
-| `CompanionPanelView.swift` | ~297 | SwiftUI settings panel. Edits endpoint URL, API key, model ID, context turn count, and the global shortcut, and surfaces Screen Recording status. |
+| `CompanionPanelView.swift` | ~357 | SwiftUI settings panel. Edits endpoint URL, API key, model ID, context turn count, the global shortcut, and session archive actions, and surfaces Screen Recording status. |
 | `SessionArchiveStore.swift` | ~231 | JSON-backed session persistence layer. Stores active session metadata in `UserDefaults` and full completed conversation turns in Application Support archives. |
 | `OverlayWindow.swift` | ~392 | Full-screen transparent overlay hosting the blue cursor, processing spinner, and pointing animation. |
 | `CompanionScreenCaptureUtility.swift` | ~96 | Captures the current cursor screen with ScreenCaptureKit while excluding Clicky's own windows. |

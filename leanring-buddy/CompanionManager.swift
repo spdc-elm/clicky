@@ -42,6 +42,8 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var activeSessionArchive: ClickySessionArchive?
     @Published private(set) var selectedConversationTurnID: UUID?
     @Published private(set) var needsSessionRestoreDecision = false
+    @Published var settingsPanelFeedbackMessage: String?
+    @Published var settingsPanelFeedbackIsError = false
 
     let settingsStore: ClickySettingsStore
     let overlayWindowManager: OverlayWindowManager
@@ -308,6 +310,43 @@ final class CompanionManager: ObservableObject {
         if promptComposerPanelManager.isVisible, !needsSessionRestoreDecision {
             requestPromptEditorFocus()
         }
+    }
+
+    func openSessionArchivesFolder() {
+        do {
+            let sessionsDirectoryURL = try sessionArchiveStore.sessionsDirectoryURLForOpening()
+            let didOpenDirectory = NSWorkspace.shared.open(sessionsDirectoryURL)
+
+            if didOpenDirectory {
+                settingsPanelFeedbackMessage = "Opened Session Archives in Finder."
+                settingsPanelFeedbackIsError = false
+            } else {
+                settingsPanelFeedbackMessage = "Clicky couldn't open the Session Archives folder."
+                settingsPanelFeedbackIsError = true
+            }
+        } catch {
+            settingsPanelFeedbackMessage = "Clicky couldn't prepare the Session Archives folder."
+            settingsPanelFeedbackIsError = true
+        }
+    }
+
+    func clearAllSessionArchives() {
+        cancelActiveRequestAndResetTransientUI()
+
+        do {
+            try sessionArchiveStore.clearAllSessionArchives()
+            activeSessionArchive = nil
+            recoverableSessionArchive = nil
+            needsSessionRestoreDecision = false
+            composerValidationMessage = nil
+            settingsPanelFeedbackMessage = "Cleared all archived session JSON files."
+            settingsPanelFeedbackIsError = false
+        } catch {
+            settingsPanelFeedbackMessage = "Clicky couldn't clear the archived session files."
+            settingsPanelFeedbackIsError = true
+        }
+
+        interfaceState = promptComposerPanelManager.isVisible ? .composing : .idle
     }
 
     func resumePendingSession() {

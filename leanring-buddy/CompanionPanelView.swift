@@ -11,6 +11,7 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @ObservedObject private var settingsStore: ClickySettingsStore
+    @State private var isShowingClearSessionArchivesConfirmation = false
 
     init(companionManager: CompanionManager) {
         self.companionManager = companionManager
@@ -38,6 +39,14 @@ struct CompanionPanelView: View {
         }
         .frame(width: 360)
         .background(panelBackground)
+        .alert("Clear Session Archives?", isPresented: $isShowingClearSessionArchivesConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear", role: .destructive) {
+                companionManager.clearAllSessionArchives()
+            }
+        } message: {
+            Text("This deletes all saved session JSON files and clears the active session restore state.")
+        }
     }
 
     private var header: some View {
@@ -179,8 +188,59 @@ struct CompanionPanelView: View {
                 )
             }
 
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Session Archives")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                HStack(spacing: 10) {
+                    Button(action: companionManager.openSessionArchivesFolder) {
+                        Text("Open Folder")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(DS.Colors.textSecondary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .frame(maxWidth: .infinity)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .stroke(DS.Colors.borderSubtle, lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+
+                    Button(action: {
+                        isShowingClearSessionArchivesConfirmation = true
+                    }) {
+                        Text("Clear Archives")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(DS.Colors.destructiveText)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .frame(maxWidth: .infinity)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .stroke(DS.Colors.destructive.opacity(0.45), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                }
+
+                helperCopy("Session JSON files live in Application Support under Clicky/Sessions.")
+            }
+
             if !companionManager.hasScreenRecordingPermission {
                 permissionWarning
+            } else if let settingsPanelFeedbackMessage = companionManager.settingsPanelFeedbackMessage {
+                Text(settingsPanelFeedbackMessage)
+                    .font(.system(size: 11))
+                    .foregroundColor(
+                        companionManager.settingsPanelFeedbackIsError
+                            ? DS.Colors.destructiveText
+                            : DS.Colors.textTertiary
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
             } else if !settingsStore.isConfigurationComplete {
                 helperCopy("Fill in the endpoint, API key, and model, then use your shortcut to open the prompt composer.")
             } else if !settingsStore.hasConfiguredShortcut {

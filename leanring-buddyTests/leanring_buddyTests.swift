@@ -278,6 +278,23 @@ struct leanring_buddyTests {
         }
     }
 
+    @Test func clearingSessionArchivesRemovesFilesAndActiveRestoreState() async throws {
+        let testStorageEnvironment = TestStorageEnvironment()
+        defer { testStorageEnvironment.cleanup() }
+
+        let sessionArchiveStore = testStorageEnvironment.makeSessionArchiveStore()
+        let createdSessionArchive = try sessionArchiveStore.createNewConversationSession()
+
+        #expect(sessionArchiveStore.archiveExists(for: createdSessionArchive.sessionID))
+        #expect(sessionArchiveStore.activeSessionID == createdSessionArchive.sessionID)
+
+        try sessionArchiveStore.clearAllSessionArchives()
+
+        #expect(!sessionArchiveStore.archiveExists(for: createdSessionArchive.sessionID))
+        #expect(sessionArchiveStore.activeSessionID == nil)
+        #expect(!sessionArchiveStore.hasPendingSessionRestoreDecision)
+    }
+
     @Test func pointCoordinateParserExtractsDisplayTextAndCoordinate() async throws {
         let parseResult = CompanionManager.parsePointingCoordinates(
             from: "Open the highlighted button first. [POINT:320,240:run button]"

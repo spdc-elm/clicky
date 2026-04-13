@@ -208,6 +208,20 @@ final class SessionArchiveStore {
         try archiveData.write(to: archiveFileURL(for: archive.sessionID), options: .atomic)
     }
 
+    func sessionsDirectoryURLForOpening() throws -> URL {
+        try ensureSessionsDirectoryExists()
+        return sessionsDirectoryURL
+    }
+
+    func clearAllSessionArchives() throws {
+        if fileManager.fileExists(atPath: sessionsDirectoryURL.path) {
+            try fileManager.removeItem(at: sessionsDirectoryURL)
+        }
+
+        activeSessionID = nil
+        hasPendingSessionRestoreDecision = false
+    }
+
     func archiveExists(for sessionID: UUID) -> Bool {
         fileManager.fileExists(atPath: archiveFileURL(for: sessionID).path)
     }
