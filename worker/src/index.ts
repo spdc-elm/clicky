@@ -13,7 +13,6 @@ interface Env {
   ANTHROPIC_API_KEY: string;
   ELEVENLABS_API_KEY: string;
   ELEVENLABS_VOICE_ID: string;
-  ASSEMBLYAI_API_KEY: string;
 }
 
 export default {
@@ -33,9 +32,6 @@ export default {
         return await handleTTS(request, env);
       }
 
-      if (url.pathname === "/transcribe-token") {
-        return await handleTranscribeToken(env);
-      }
     } catch (error) {
       console.error(`[${url.pathname}] Unhandled error:`, error);
       return new Response(
@@ -76,33 +72,6 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
       "content-type": response.headers.get("content-type") || "text/event-stream",
       "cache-control": "no-cache",
     },
-  });
-}
-
-async function handleTranscribeToken(env: Env): Promise<Response> {
-  const response = await fetch(
-    "https://streaming.assemblyai.com/v3/token?expires_in_seconds=480",
-    {
-      method: "GET",
-      headers: {
-        authorization: env.ASSEMBLYAI_API_KEY,
-      },
-    }
-  );
-
-  if (!response.ok) {
-    const errorBody = await response.text();
-    console.error(`[/transcribe-token] AssemblyAI token error ${response.status}: ${errorBody}`);
-    return new Response(errorBody, {
-      status: response.status,
-      headers: { "content-type": "application/json" },
-    });
-  }
-
-  const data = await response.text();
-  return new Response(data, {
-    status: 200,
-    headers: { "content-type": "application/json" },
   });
 }
 

@@ -79,7 +79,7 @@ leanring-buddy/          # Swift source (yes, the typo stays)
   OverlayWindow.swift       # Blue cursor overlay
   ClickySettingsStore.swift # Endpoint/model/API-key config
 worker/                  # Optional Cloudflare Worker proxy
-  src/index.ts              # Legacy /chat, /tts, /transcribe-token routes
+  src/index.ts              # Legacy /chat and /tts routes
 CLAUDE.md                # Full architecture doc (agents read this)
 ```
 

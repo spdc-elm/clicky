@@ -31,9 +31,7 @@ The app can call an Anthropic-compatible endpoint directly. A Cloudflare Worker 
 |-------|----------|---------|
 | `POST /chat` | `api.anthropic.com/v1/messages` | Anthropic-compatible streaming chat |
 | `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | Legacy TTS proxy route |
-| `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Legacy AssemblyAI token route |
-
-Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`
+Worker secrets: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`
 Worker vars: `ELEVENLABS_VOICE_ID`
 
 ### Key Architecture Decisions
@@ -63,7 +61,7 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `KeychainSecretStore.swift` | ~80 | Minimal Keychain wrapper for storing the API key locally. |
 | `KeyboardShortcutDefinitions.swift` | ~12 | Shared `KeyboardShortcuts` names used for the global composer shortcut. |
 | `WindowPositionManager.swift` | ~266 | Screen Recording permission flow plus a few legacy window/accessibility helpers still used elsewhere in the codebase. |
-| `worker/src/index.ts` | ~142 | Optional Cloudflare Worker proxy. Still supports `/chat`, `/tts`, and `/transcribe-token` routes for proxy-based deployments. |
+| `worker/src/index.ts` | ~114 | Optional Cloudflare Worker proxy. Supports `/chat` and `/tts` routes for proxy-based deployments. |
 
 ## Build & Run
 
