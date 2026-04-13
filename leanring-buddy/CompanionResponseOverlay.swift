@@ -2,84 +2,88 @@
 //  CompanionResponseOverlay.swift
 //  leanring-buddy
 //
-//  Cursor-following overlay that displays streaming AI response text.
-//  Uses a non-activating NSPanel so it floats above all apps without
-//  stealing focus, and repositions itself near the mouse cursor each frame.
+//  Anchored response panel for streaming AI output.
 //
 
 import AppKit
 import Combine
 import SwiftUI
 
-// MARK: - View Model
+private final class FocusableResponsePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
+private enum ResponsePanelAnchor {
+    case bottomCenter
+    case topCenter
+}
 
 @MainActor
 final class CompanionResponseOverlayViewModel: ObservableObject {
-    @Published var streamingResponseText: String = ""
-    @Published var isShowingResponse: Bool = false
+    @Published var responseText: String = ""
+    @Published var isStreamingResponse = false
+    @Published var responseIdentifier = UUID()
 }
 
-// MARK: - Overlay Manager
-
 @MainActor
-final class CompanionResponseOverlayManager {
+final class CompanionResponseOverlayManager: NSObject, NSWindowDelegate {
     private let overlayViewModel = CompanionResponseOverlayViewModel()
     private var overlayPanel: NSPanel?
-    private var cursorTrackingTimer: Timer?
-    private var autoHideWorkItem: DispatchWorkItem?
+    private var targetScreen: NSScreen?
+    private var currentAnchor: ResponsePanelAnchor = .bottomCenter
+    private var currentResponseIdentifier = UUID()
+    private var panelSize = CGSize(width: 680, height: 320)
+    private let minimumPanelSize = CGSize(width: 440, height: 220)
 
-    /// The horizontal offset from the cursor to the left edge of the overlay panel.
-    private let cursorOffsetX: CGFloat = 22
-    /// The vertical offset from the cursor downward to the top edge of the overlay panel.
-    private let cursorOffsetY: CGFloat = 6
-    /// Maximum width of the overlay panel.
-    private let overlayMaxWidth: CGFloat = 340
-
-    func showOverlayAndBeginStreaming() {
-        autoHideWorkItem?.cancel()
-        autoHideWorkItem = nil
-
-        overlayViewModel.streamingResponseText = ""
-        overlayViewModel.isShowingResponse = true
+    func beginStreaming(on screen: NSScreen, referencePoint: CGPoint) {
+        currentResponseIdentifier = UUID()
+        overlayViewModel.responseText = ""
+        overlayViewModel.isStreamingResponse = true
+        overlayViewModel.responseIdentifier = currentResponseIdentifier
+        targetScreen = screen
+        currentAnchor = anchor(for: referencePoint, in: screen)
         createOverlayPanelIfNeeded()
-        startCursorTracking()
+        resizeAndPositionPanel()
         overlayPanel?.alphaValue = 1
         overlayPanel?.orderFrontRegardless()
     }
 
-    func updateStreamingText(_ accumulatedText: String) {
-        overlayViewModel.streamingResponseText = accumulatedText
-        resizePanelToFitContent()
+    func updateStreamingText(_ responseText: String) {
+        overlayViewModel.responseText = responseText
     }
 
-    func finishStreaming() {
-        // Keep the response visible for a few seconds after streaming ends,
-        // then fade out so the user has time to read the last chunk.
-        let hideWork = DispatchWorkItem { [weak self] in
-            self?.fadeOutAndHide()
-        }
-        autoHideWorkItem = hideWork
-        DispatchQueue.main.asyncAfter(deadline: .now() + 6, execute: hideWork)
+    func finishStreaming(finalText: String) {
+        overlayViewModel.responseText = finalText
+        overlayViewModel.isStreamingResponse = false
+    }
+
+    func presentError(_ errorText: String, on screen: NSScreen, referencePoint: CGPoint) {
+        beginStreaming(on: screen, referencePoint: referencePoint)
+        overlayViewModel.responseText = errorText
+        overlayViewModel.isStreamingResponse = false
+    }
+
+    func updateAnchorIfNeeded(for referencePoint: CGPoint) {
+        guard let targetScreen else { return }
+        let updatedAnchor = anchor(for: referencePoint, in: targetScreen)
+        guard currentAnchor == .bottomCenter, updatedAnchor == .topCenter else { return }
+        currentAnchor = updatedAnchor
+        resizeAndPositionPanel()
     }
 
     func hideOverlay() {
-        autoHideWorkItem?.cancel()
-        autoHideWorkItem = nil
-        stopCursorTracking()
-        overlayViewModel.isShowingResponse = false
-        overlayViewModel.streamingResponseText = ""
         overlayPanel?.orderOut(nil)
+        overlayViewModel.responseText = ""
+        overlayViewModel.isStreamingResponse = false
     }
 
-    // MARK: - Private
-
     private func createOverlayPanelIfNeeded() {
-        if overlayPanel != nil { return }
+        guard overlayPanel == nil else { return }
 
-        let initialFrame = NSRect(x: 0, y: 0, width: overlayMaxWidth, height: 40)
-        let responseOverlayPanel = NSPanel(
-            contentRect: initialFrame,
-            styleMask: [.borderless, .nonactivatingPanel],
+        let responseOverlayPanel = FocusableResponsePanel(
+            contentRect: CGRect(origin: .zero, size: panelSize),
+            styleMask: [.borderless, .nonactivatingPanel, .resizable],
             backing: .buffered,
             defer: false
         )
@@ -88,130 +92,218 @@ final class CompanionResponseOverlayManager {
         responseOverlayPanel.isOpaque = false
         responseOverlayPanel.backgroundColor = .clear
         responseOverlayPanel.hasShadow = false
-        responseOverlayPanel.ignoresMouseEvents = true
         responseOverlayPanel.hidesOnDeactivate = false
         responseOverlayPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         responseOverlayPanel.isExcludedFromWindowsMenu = true
+        responseOverlayPanel.isMovableByWindowBackground = true
+        responseOverlayPanel.minSize = minimumPanelSize
+        responseOverlayPanel.delegate = self
 
         let hostingView = NSHostingView(
-            rootView: CompanionResponseOverlayView(viewModel: overlayViewModel)
-                .frame(maxWidth: overlayMaxWidth)
+            rootView: CompanionResponseOverlayView(
+                viewModel: overlayViewModel,
+                onClose: { [weak self] in
+                    self?.hideOverlay()
+                }
+            )
         )
-        hostingView.frame = initialFrame
-        responseOverlayPanel.contentView = hostingView
 
+        responseOverlayPanel.contentView = hostingView
         overlayPanel = responseOverlayPanel
     }
 
-    private func startCursorTracking() {
-        // 60fps cursor tracking so the panel stays glued to the mouse
-        cursorTrackingTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.repositionPanelNearCursor()
-            }
-        }
-    }
+    private func resizeAndPositionPanel() {
+        guard let overlayPanel, let targetScreen else { return }
 
-    private func stopCursorTracking() {
-        cursorTrackingTimer?.invalidate()
-        cursorTrackingTimer = nil
-    }
+        let visibleFrame = targetScreen.visibleFrame
+        let panelWidth = min(panelSize.width, visibleFrame.width * 0.82)
+        let panelHeight = min(panelSize.height, visibleFrame.height * 0.6)
+        let verticalMargin: CGFloat = 20
 
-    private func repositionPanelNearCursor() {
-        guard let overlayPanel else { return }
-
-        let mouseLocation = NSEvent.mouseLocation
-        let panelSize = overlayPanel.frame.size
-
-        // Position the panel to the right of and slightly below the cursor.
-        // In macOS screen coordinates, Y increases upward, so "below" means
-        // subtracting from the cursor Y.
-        var panelOriginX = mouseLocation.x + cursorOffsetX
-        var panelOriginY = mouseLocation.y - cursorOffsetY - panelSize.height
-
-        // Clamp to the visible frame of the screen containing the cursor
-        // so the panel never goes off-screen.
-        if let currentScreen = screenContainingPoint(mouseLocation) {
-            let visibleFrame = currentScreen.visibleFrame
-
-            // If the panel would go off the right edge, flip it to the left of the cursor
-            if panelOriginX + panelSize.width > visibleFrame.maxX {
-                panelOriginX = mouseLocation.x - cursorOffsetX - panelSize.width
-            }
-
-            // If the panel would go below the bottom edge, push it above the cursor
-            if panelOriginY < visibleFrame.minY {
-                panelOriginY = mouseLocation.y + cursorOffsetY
-            }
-
-            // Final clamp
-            panelOriginX = max(visibleFrame.minX, min(panelOriginX, visibleFrame.maxX - panelSize.width))
-            panelOriginY = max(visibleFrame.minY, min(panelOriginY, visibleFrame.maxY - panelSize.height))
+        let panelOriginY: CGFloat
+        switch currentAnchor {
+        case .bottomCenter:
+            panelOriginY = visibleFrame.minY + verticalMargin
+        case .topCenter:
+            panelOriginY = visibleFrame.maxY - panelHeight - verticalMargin
         }
 
-        overlayPanel.setFrameOrigin(CGPoint(x: panelOriginX, y: panelOriginY))
+        let panelOriginX = visibleFrame.midX - (panelWidth / 2)
+        let panelFrame = CGRect(x: panelOriginX, y: panelOriginY, width: panelWidth, height: panelHeight)
+        overlayPanel.setFrame(panelFrame, display: true)
+        overlayPanel.contentView?.frame = CGRect(origin: .zero, size: panelFrame.size)
     }
 
-    private func resizePanelToFitContent() {
-        guard let overlayPanel, let contentView = overlayPanel.contentView else { return }
-
-        let fittingSize = contentView.fittingSize
-        let newWidth = min(fittingSize.width, overlayMaxWidth)
-        let newHeight = fittingSize.height
-
-        // Keep the panel origin relative to the cursor (the timer handles that),
-        // but update the frame size so the content fits.
-        var frame = overlayPanel.frame
-        let heightDelta = newHeight - frame.height
-        frame.size = CGSize(width: newWidth, height: newHeight)
-        // Adjust origin Y so the panel grows upward (toward the cursor), not downward
-        frame.origin.y -= heightDelta
-        overlayPanel.setFrame(frame, display: true)
-        contentView.frame = NSRect(origin: .zero, size: frame.size)
+    func windowDidResize(_ notification: Notification) {
+        guard let resizedPanel = notification.object as? NSPanel else { return }
+        panelSize = resizedPanel.frame.size
     }
 
-    private func fadeOutAndHide() {
-        guard let overlayPanel else { return }
-
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.4
-            overlayPanel.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
-            Task { @MainActor in
-                self?.hideOverlay()
-            }
-        })
-    }
-
-    private func screenContainingPoint(_ point: CGPoint) -> NSScreen? {
-        NSScreen.screens.first { $0.frame.contains(point) }
+    private func anchor(for referencePoint: CGPoint, in screen: NSScreen) -> ResponsePanelAnchor {
+        let visibleFrame = screen.visibleFrame
+        let bottomThreshold = visibleFrame.minY + (visibleFrame.height * 0.35)
+        return referencePoint.y <= bottomThreshold ? .topCenter : .bottomCenter
     }
 }
 
-// MARK: - SwiftUI View
-
 private struct CompanionResponseOverlayView: View {
     @ObservedObject var viewModel: CompanionResponseOverlayViewModel
+    let onClose: () -> Void
 
     var body: some View {
-        if viewModel.isShowingResponse {
-            Text(viewModel.streamingResponseText.isEmpty ? "..." : viewModel.streamingResponseText)
-                .font(.system(size: 13, weight: .regular))
-                .foregroundColor(DS.Colors.textPrimary)
-                .lineSpacing(3)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: 300, alignment: .leading)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(DS.Colors.surface1.opacity(0.95))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .stroke(DS.Colors.borderSubtle.opacity(0.5), lineWidth: 0.8)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Clicky")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(DS.Colors.textPrimary)
+
+                    Text(viewModel.isStreamingResponse ? "Streaming response..." : "Latest response")
+                        .font(.system(size: 11))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+
+                Spacer()
+
+                Text("Drag to move")
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
+
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .frame(width: 20, height: 20)
+                        .background(
+                            Circle()
+                                .fill(Color.white.opacity(0.08))
                         )
-                        .shadow(color: Color.black.opacity(0.35), radius: 16, x: 0, y: 8)
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+
+            StreamingResponseTextView(
+                text: viewModel.responseText,
+                responseIdentifier: viewModel.responseIdentifier
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(DS.Colors.surface2)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(DS.Colors.borderSubtle.opacity(0.75), lineWidth: 1)
+                    )
+            )
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(DS.Colors.surface1.opacity(0.98))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 1)
                 )
+                .shadow(color: Color.black.opacity(0.35), radius: 18, x: 0, y: 10)
+        )
+    }
+}
+
+private struct StreamingResponseTextView: NSViewRepresentable {
+    let text: String
+    let responseIdentifier: UUID
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .noBorder
+        scrollView.contentView.postsBoundsChangedNotifications = true
+
+        let textView = NSTextView()
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.drawsBackground = false
+        textView.font = .systemFont(ofSize: 13)
+        textView.textColor = .white
+        textView.textContainerInset = NSSize(width: 14, height: 14)
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: .greatestFiniteMagnitude)
+
+        scrollView.documentView = textView
+
+        NotificationCenter.default.addObserver(
+            context.coordinator,
+            selector: #selector(Coordinator.didScroll(_:)),
+            name: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView
+        )
+        context.coordinator.scrollView = scrollView
+        context.coordinator.textView = textView
+        return scrollView
+    }
+
+    func updateNSView(_ nsView: NSScrollView, context: Context) {
+        guard let textView = nsView.documentView as? NSTextView else { return }
+
+        if context.coordinator.lastResponseIdentifier != responseIdentifier {
+            context.coordinator.lastResponseIdentifier = responseIdentifier
+            context.coordinator.shouldAutoScroll = true
+        }
+
+        if textView.string != text {
+            textView.string = text
+            if context.coordinator.shouldAutoScroll {
+                context.coordinator.scrollToBottom()
+            }
+        }
+    }
+
+    static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {
+        NotificationCenter.default.removeObserver(coordinator)
+    }
+
+    final class Coordinator: NSObject {
+        weak var scrollView: NSScrollView?
+        weak var textView: NSTextView?
+        var shouldAutoScroll = true
+        var isPerformingProgrammaticScroll = false
+        var lastResponseIdentifier = UUID()
+
+        @objc func didScroll(_ notification: Notification) {
+            guard !isPerformingProgrammaticScroll,
+                  let scrollView,
+                  let documentView = scrollView.documentView else {
+                return
+            }
+
+            let visibleRect = scrollView.contentView.bounds
+            let maximumOffsetY = max(0, documentView.bounds.height - visibleRect.height)
+            let distanceFromBottom = maximumOffsetY - visibleRect.origin.y
+            shouldAutoScroll = distanceFromBottom < 24
+        }
+
+        func scrollToBottom() {
+            guard let scrollView, let documentView = scrollView.documentView else { return }
+
+            let visibleRect = scrollView.contentView.bounds
+            let maximumOffsetY = max(0, documentView.bounds.height - visibleRect.height)
+            let newOrigin = CGPoint(x: 0, y: maximumOffsetY)
+
+            isPerformingProgrammaticScroll = true
+            scrollView.contentView.scroll(to: newOrigin)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            DispatchQueue.main.async {
+                self.isPerformingProgrammaticScroll = false
+            }
         }
     }
 }

@@ -259,4 +259,8 @@ extension NSScreen {
         let key = NSDeviceDescriptionKey("NSScreenNumber")
         return deviceDescription[key] as? CGDirectDisplayID ?? 0
     }
+
+    static func screenContainingPoint(_ point: CGPoint) -> NSScreen? {
+        NSScreen.screens.first(where: { $0.frame.contains(point) })
+    }
 }
