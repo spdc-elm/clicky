@@ -27,6 +27,13 @@ struct ConversationHistoryPreviewTurn: Identifiable {
     var id: UUID { turnID }
 }
 
+struct AIRequestConfiguration: Equatable {
+    let provider: AIProvider
+    let endpointURL: URL
+    let apiKey: String
+    let modelID: String
+}
+
 @MainActor
 final class CompanionManager: ObservableObject {
     @Published private(set) var interfaceState: CompanionInterfaceState = .idle
@@ -495,16 +502,10 @@ final class CompanionManager: ObservableObject {
                 }
             }
 
-            guard let endpointURL = settingsStore.resolvedEndpointURL() else {
+            guard let requestConfiguration = currentAIRequestConfiguration() else {
                 composerValidationMessage = "The configured endpoint is invalid."
                 return
             }
-
-            let claudeAPI = ClaudeAPI(
-                endpointURL: endpointURL,
-                apiKey: settingsStore.trimmedAPIKey,
-                modelID: settingsStore.trimmedModelID
-            )
 
             do {
                 let screenCapture = try await CompanionScreenCaptureUtility.captureCursorScreenAsJPEG()
@@ -525,10 +526,10 @@ final class CompanionManager: ObservableObject {
                     )
                 }
 
-                let fullResponseText = try await claudeAPI.analyzeImageStreaming(
+                let fullResponseText = try await analyzeImageStreaming(
+                    requestConfiguration: requestConfiguration,
                     images: [labeledImage],
-                    systemPrompt: Self.textResponseSystemPrompt,
-                    conversationHistory: conversationHistoryForRequest,
+                    conversationHistoryForRequest: conversationHistoryForRequest,
                     userPrompt: prompt,
                     onTextChunk: { [weak self] accumulatedText in
                         guard let self else { return }
@@ -575,6 +576,58 @@ final class CompanionManager: ObservableObject {
                     responseOverlayManager.presentError(errorMessage, on: targetScreen)
                 }
             }
+        }
+    }
+
+    func currentAIRequestConfiguration() -> AIRequestConfiguration? {
+        guard let endpointURL = settingsStore.resolvedEndpointURL() else {
+            return nil
+        }
+
+        return AIRequestConfiguration(
+            provider: settingsStore.selectedProvider,
+            endpointURL: endpointURL,
+            apiKey: settingsStore.trimmedAPIKey,
+            modelID: settingsStore.trimmedModelID
+        )
+    }
+
+    private func analyzeImageStreaming(
+        requestConfiguration: AIRequestConfiguration,
+        images: [(data: Data, label: String)],
+        conversationHistoryForRequest: [(userPrompt: String, assistantResponse: String)],
+        userPrompt: String,
+        onTextChunk: @escaping @MainActor @Sendable (String) -> Void
+    ) async throws -> String {
+        switch requestConfiguration.provider {
+        case .anthropic:
+            let claudeAPI = ClaudeAPI(
+                endpointURL: requestConfiguration.endpointURL,
+                apiKey: requestConfiguration.apiKey,
+                modelID: requestConfiguration.modelID
+            )
+
+            return try await claudeAPI.analyzeImageStreaming(
+                images: images,
+                systemPrompt: Self.textResponseSystemPrompt,
+                conversationHistory: conversationHistoryForRequest,
+                userPrompt: userPrompt,
+                onTextChunk: onTextChunk
+            )
+        case .openAI:
+            let openAIAPI = OpenAIAPI(
+                endpointURL: requestConfiguration.endpointURL,
+                apiKey: requestConfiguration.apiKey,
+                modelID: requestConfiguration.modelID
+            )
+
+            return try await openAIAPI.analyzeImageStreaming(
+                images: images,
+                systemPrompt: Self.textResponseSystemPrompt,
+                conversationHistory: conversationHistoryForRequest,
+                userPrompt: userPrompt,
+                onTextChunk: onTextChunk
+            )
         }
     }
 

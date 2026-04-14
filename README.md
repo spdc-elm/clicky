@@ -22,7 +22,7 @@ Clone https://github.com/farzaa/clicky.git into my current directory.
 
 Then read the CLAUDE.md. I want to get Clicky running locally on my Mac.
 
-Help me set up Clicky with my own Anthropic-compatible endpoint, API key, and model in Xcode. Walk me through it.
+Help me set up Clicky with my own Anthropic or OpenAI endpoint, API key, and model in Xcode. Walk me through it.
 ```
 
 That's it. It'll clone the repo, read the docs, and walk you through the whole setup. Once you're running you can just keep talking to it — build features, fix bugs, whatever. Go crazy.
@@ -35,7 +35,7 @@ If you want to do it yourself, here's the deal.
 
 - macOS 14.2+ (for ScreenCaptureKit)
 - Xcode 15+
-- API key for an Anthropic-compatible endpoint
+- API key for an Anthropic-compatible or OpenAI-compatible endpoint
 
 ### 1. Open in Xcode and run
 
@@ -50,7 +50,8 @@ In Xcode:
 
 The app will appear in your menu bar (not the dock). Click the icon to open the settings panel, then fill in:
 
-- Endpoint URL or full `/v1/messages` URL
+- Provider
+- Endpoint URL or full provider-specific API URL
 - API key
 - Model ID
 - Global shortcut
@@ -65,7 +66,7 @@ Once those are set, use your shortcut to open the centered prompt composer, type
 
 If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
 
-**Menu bar app** (no dock icon) with three `NSPanel` surfaces — one for settings, one centered prompt composer, and one floating response panel — plus a full-screen transparent cursor overlay. Sending a prompt captures the current cursor screen, streams an Anthropic-compatible vision response over SSE, and keeps Clicky's pointing behavior via terminal `[POINT:x,y:label]` tags.
+**Menu bar app** (no dock icon) with three `NSPanel` surfaces — one for settings, one centered prompt composer, and one floating response panel — plus a full-screen transparent cursor overlay. Sending a prompt captures the current cursor screen, then streams either an Anthropic Messages response or an OpenAI Chat Completions response based on the selected provider, while keeping Clicky's pointing behavior via terminal `[POINT:x,y:label]` tags.
 
 ## Project structure
 
@@ -76,8 +77,9 @@ leanring-buddy/          # Swift source (yes, the typo stays)
   PromptComposerOverlay.swift # Centered input overlay
   CompanionResponseOverlay.swift # Scrollable response panel
   ClaudeAPI.swift           # Claude streaming client
+  OpenAIAPI.swift           # OpenAI streaming client
   OverlayWindow.swift       # Blue cursor overlay
-  ClickySettingsStore.swift # Endpoint/model/API-key config
+  ClickySettingsStore.swift # Provider-specific endpoint/model/API-key config
 worker/                  # Optional Cloudflare Worker proxy
   src/index.ts              # Legacy /chat and /tts routes
 CLAUDE.md                # Full architecture doc (agents read this)

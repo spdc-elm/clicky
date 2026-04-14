@@ -5,16 +5,16 @@
 
 ## Overview
 
-macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a compact settings panel. A user-configured global shortcut opens a centered prompt composer with a session context preview, persistent session restore flow, and archived conversation history; sending captures the current cursor screen, streams an Anthropic-compatible response into a floating text panel, and keeps the blue cursor buddy available for on-screen pointing.
+macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a compact settings panel. A user-configured global shortcut opens a centered prompt composer with a session context preview, persistent session restore flow, and archived conversation history; sending captures the current cursor screen, streams either an Anthropic Messages response or an OpenAI Chat Completions response into a floating text panel, and keeps the blue cursor buddy available for on-screen pointing.
 
-API credentials are stored locally in Keychain. The app can talk directly to an Anthropic-compatible endpoint. The Cloudflare Worker remains in the repo as an optional proxy, not a runtime requirement.
+API credentials are stored locally in Keychain. The app can talk directly to either an Anthropic-compatible endpoint or an OpenAI-compatible endpoint, selected at runtime in the settings panel. The Cloudflare Worker remains in the repo as an optional Anthropic proxy, not a runtime requirement.
 
 ## Architecture
 
 - **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
-- **AI Chat**: Anthropic-compatible Messages API with SSE streaming, configurable endpoint/model/API key
+- **AI Chat**: Provider-selectable Anthropic Messages API or OpenAI Chat Completions API, both with streaming text responses and configurable endpoint/model/API key
 - **Shortcut Handling**: Global shortcut registration and recording via `KeyboardShortcuts`
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), current cursor screen only
 - **Input UX**: Centered prompt composer overlay with a session context sidebar, restorable session chooser, history detail panel, and multiline text input
@@ -26,7 +26,7 @@ API credentials are stored locally in Keychain. The app can talk directly to an 
 
 ### Optional API Proxy
 
-The app can call an Anthropic-compatible endpoint directly. A Cloudflare Worker (`worker/src/index.ts`) still exists as an optional proxy for setups that do not want to ship raw provider keys in the client.
+The app can call Anthropic-compatible or OpenAI-compatible endpoints directly. A Cloudflare Worker (`worker/src/index.ts`) still exists as an optional Anthropic proxy for setups that do not want to ship raw provider keys in the client.
 
 | Route | Upstream | Purpose |
 |-------|----------|---------|
@@ -45,23 +45,24 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 
 **Session Archive Split**: Clicky now separates the persistent session archive from the transient AI context window. Full completed turns are saved as JSON session events, while only the most recent configured turns are shown in the composer sidebar and sent back to the model.
 
-**Direct Endpoint Configuration**: Endpoint URL, API key, and model ID are configured at runtime. The API key is stored in Keychain, while the endpoint and model are stored in `UserDefaults`.
+**Direct Endpoint Configuration**: Provider, endpoint URL, API key, and model ID are configured at runtime. Each provider keeps its own endpoint/model/API-key settings so users can switch between Anthropic and OpenAI without re-entering credentials.
 
 ## Key Files
 
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~50 | Menu bar app entry point. Creates `CompanionManager`, launches the cursor overlay, and auto-opens the settings panel when configuration is incomplete. |
-| `CompanionManager.swift` | ~657 | Central text-first state machine. Owns prompt composer flow, session restore/new-session behavior, JSON-backed archive integration, screenshot capture, response streaming, context-window derivation, and pointing state. |
+| `CompanionManager.swift` | ~740 | Central text-first state machine. Owns prompt composer flow, session restore/new-session behavior, JSON-backed archive integration, screenshot capture, provider-based response streaming, context-window derivation, and pointing state. |
 | `PromptComposerOverlay.swift` | ~772 | Centered prompt composer overlay built with a key-capable `NSPanel`, a clickable session history sidebar, a restore chooser, a full-turn detail panel, and a custom multiline `NSTextView` bridge. |
 | `CompanionResponseOverlay.swift` | ~295 | Scrollable floating response panel that streams text, supports manual scrolling, and stays anchored bottom-center. |
 | `MenuBarPanelManager.swift` | ~236 | NSStatusItem + custom NSPanel lifecycle for the settings dropdown. |
-| `CompanionPanelView.swift` | ~357 | SwiftUI settings panel. Edits endpoint URL, API key, model ID, context turn count, the global shortcut, and session archive actions, and surfaces Screen Recording status. |
+| `CompanionPanelView.swift` | ~380 | SwiftUI settings panel. Edits provider-specific endpoint URL, API key, model ID, context turn count, the global shortcut, and session archive actions, and surfaces Screen Recording status. |
 | `SessionArchiveStore.swift` | ~231 | JSON-backed session persistence layer. Stores active session metadata in `UserDefaults` and full completed conversation turns in Application Support archives. |
 | `OverlayWindow.swift` | ~392 | Full-screen transparent overlay hosting the blue cursor, processing spinner, and pointing animation. |
 | `CompanionScreenCaptureUtility.swift` | ~96 | Captures the current cursor screen with ScreenCaptureKit while excluding Clicky's own windows. |
 | `ClaudeAPI.swift` | ~166 | Anthropic-compatible SSE client with runtime endpoint/API key/model configuration and TLS warmup. |
-| `ClickySettingsStore.swift` | ~87 | Runtime settings store for endpoint URL, model ID, and API key-backed validation. Persists non-secret config to `UserDefaults`. |
+| `OpenAIAPI.swift` | ~170 | OpenAI-compatible chat completions streaming client with runtime endpoint/API key/model configuration and TLS warmup. |
+| `ClickySettingsStore.swift` | ~230 | Runtime settings store for provider-specific endpoint URL, model ID, and API key-backed validation. Persists non-secret config to `UserDefaults`. |
 | `KeychainSecretStore.swift` | ~80 | Minimal Keychain wrapper for storing the API key locally. |
 | `KeyboardShortcutDefinitions.swift` | ~12 | Shared `KeyboardShortcuts` names used for the global composer shortcut. |
 | `WindowPositionManager.swift` | ~266 | Screen Recording permission flow plus a few legacy window/accessibility helpers still used elsewhere in the codebase. |
@@ -75,7 +76,7 @@ open leanring-buddy.xcodeproj
 
 # Select the leanring-buddy scheme, set signing team, Cmd+R to build and run
 
-# The app now talks directly to an Anthropic-compatible endpoint configured in the menu bar panel.
+# The app now talks directly to either an Anthropic-compatible or OpenAI-compatible endpoint configured in the menu bar panel.
 # Known non-blocking warnings: Swift 6 concurrency warnings. Do NOT attempt to fix these.
 ```
 

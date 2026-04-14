@@ -16,6 +16,7 @@ struct leanring_buddyTests {
         let suiteName: String
         let userDefaults: UserDefaults
         let sessionsDirectoryURL: URL
+        let keychainSecretStore: KeychainSecretStore
 
         init() {
             suiteName = "clicky-tests-\(UUID().uuidString)"
@@ -23,6 +24,7 @@ struct leanring_buddyTests {
             userDefaults.removePersistentDomain(forName: suiteName)
             sessionsDirectoryURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            keychainSecretStore = KeychainSecretStore(serviceName: "clicky-tests.\(UUID().uuidString)")
         }
 
         func makeSessionArchiveStore() -> SessionArchiveStore {
@@ -32,7 +34,18 @@ struct leanring_buddyTests {
             )
         }
 
+        @MainActor
+        func makeSettingsStore() -> ClickySettingsStore {
+            ClickySettingsStore(
+                userDefaults: userDefaults,
+                keychainSecretStore: keychainSecretStore
+            )
+        }
+
         func cleanup() {
+            for provider in AIProvider.allCases {
+                keychainSecretStore.deleteSecret(for: "clicky.\(provider.rawValue).apiKey")
+            }
             userDefaults.removePersistentDomain(forName: suiteName)
             try? FileManager.default.removeItem(at: sessionsDirectoryURL)
         }
@@ -65,22 +78,47 @@ struct leanring_buddyTests {
         #expect(shouldTreatPermissionAsGranted)
     }
 
-    @Test func endpointRootURLGetsNormalizedToMessagesPath() async throws {
-        let normalizedEndpointURL = ClickySettingsStore.normalizedEndpointURL(from: "https://api.anthropic.com")
+    @Test func anthropicEndpointRootURLGetsNormalizedToMessagesPath() async throws {
+        let normalizedEndpointURL = ClickySettingsStore.normalizedEndpointURL(
+            from: "https://api.anthropic.com",
+            provider: .anthropic
+        )
 
         #expect(normalizedEndpointURL?.absoluteString == "https://api.anthropic.com/v1/messages")
     }
 
-    @Test func fullMessagesEndpointURLIsPreserved() async throws {
+    @Test func openAIEndpointRootURLGetsNormalizedToChatCompletionsPath() async throws {
         let normalizedEndpointURL = ClickySettingsStore.normalizedEndpointURL(
-            from: "https://proxy.example.com/custom/v1/messages"
+            from: "https://api.openai.com",
+            provider: .openAI
+        )
+
+        #expect(normalizedEndpointURL?.absoluteString == "https://api.openai.com/v1/chat/completions")
+    }
+
+    @Test func fullAnthropicMessagesEndpointURLIsPreserved() async throws {
+        let normalizedEndpointURL = ClickySettingsStore.normalizedEndpointURL(
+            from: "https://proxy.example.com/custom/v1/messages",
+            provider: .anthropic
         )
 
         #expect(normalizedEndpointURL?.absoluteString == "https://proxy.example.com/custom/v1/messages")
     }
 
+    @Test func fullOpenAIChatCompletionsEndpointURLIsPreserved() async throws {
+        let normalizedEndpointURL = ClickySettingsStore.normalizedEndpointURL(
+            from: "https://proxy.example.com/custom/v1/chat/completions",
+            provider: .openAI
+        )
+
+        #expect(normalizedEndpointURL?.absoluteString == "https://proxy.example.com/custom/v1/chat/completions")
+    }
+
     @Test func invalidEndpointURLReturnsNil() async throws {
-        let normalizedEndpointURL = ClickySettingsStore.normalizedEndpointURL(from: "localhost:8787")
+        let normalizedEndpointURL = ClickySettingsStore.normalizedEndpointURL(
+            from: "localhost:8787",
+            provider: .anthropic
+        )
 
         #expect(normalizedEndpointURL == nil)
     }
@@ -90,10 +128,7 @@ struct leanring_buddyTests {
         defer { testStorageEnvironment.cleanup() }
 
         await MainActor.run {
-            let settingsStore = ClickySettingsStore(
-                userDefaults: testStorageEnvironment.userDefaults,
-                keychainSecretStore: KeychainSecretStore()
-            )
+            let settingsStore = testStorageEnvironment.makeSettingsStore()
 
             #expect(settingsStore.conversationContextTurnLimit == 4)
 
@@ -105,12 +140,65 @@ struct leanring_buddyTests {
         }
 
         let reloadedSettingsStore = await MainActor.run {
-            ClickySettingsStore(
-                userDefaults: testStorageEnvironment.userDefaults,
-                keychainSecretStore: KeychainSecretStore()
-            )
+            testStorageEnvironment.makeSettingsStore()
         }
         #expect(await MainActor.run { reloadedSettingsStore.conversationContextTurnLimit } == 7)
+    }
+
+    @Test func providerSpecificConfigurationIsRememberedAcrossSwitches() async throws {
+        let testStorageEnvironment = TestStorageEnvironment()
+        defer { testStorageEnvironment.cleanup() }
+
+        await MainActor.run {
+            let settingsStore = testStorageEnvironment.makeSettingsStore()
+
+            settingsStore.selectedProvider = .anthropic
+            settingsStore.endpointURLString = "https://anthropic-proxy.example.com"
+            settingsStore.modelID = "claude-test"
+            settingsStore.apiKey = "anthropic-key"
+
+            settingsStore.selectedProvider = .openAI
+            settingsStore.endpointURLString = "https://openai-proxy.example.com"
+            settingsStore.modelID = "gpt-test"
+            settingsStore.apiKey = "openai-key"
+
+            settingsStore.selectedProvider = .anthropic
+            #expect(settingsStore.endpointURLString == "https://anthropic-proxy.example.com")
+            #expect(settingsStore.modelID == "claude-test")
+            #expect(settingsStore.apiKey == "anthropic-key")
+
+            settingsStore.selectedProvider = .openAI
+            #expect(settingsStore.endpointURLString == "https://openai-proxy.example.com")
+            #expect(settingsStore.modelID == "gpt-test")
+            #expect(settingsStore.apiKey == "openai-key")
+        }
+    }
+
+    @Test func configurationCompletenessOnlyUsesSelectedProvider() async throws {
+        let testStorageEnvironment = TestStorageEnvironment()
+        defer { testStorageEnvironment.cleanup() }
+
+        await MainActor.run {
+            let settingsStore = testStorageEnvironment.makeSettingsStore()
+
+            settingsStore.selectedProvider = .anthropic
+            settingsStore.endpointURLString = "https://api.anthropic.com"
+            settingsStore.modelID = "claude-test"
+            settingsStore.apiKey = "anthropic-key"
+
+            settingsStore.selectedProvider = .openAI
+            settingsStore.endpointURLString = "https://api.openai.com"
+            settingsStore.modelID = "gpt-test"
+            settingsStore.apiKey = ""
+
+            #expect(!settingsStore.isConfigurationComplete)
+
+            settingsStore.apiKey = "openai-key"
+            #expect(settingsStore.isConfigurationComplete)
+
+            settingsStore.selectedProvider = .anthropic
+            #expect(settingsStore.isConfigurationComplete)
+        }
     }
 
     @Test func sessionArchiveRoundTripsConversationTurnsThroughJSON() async throws {
@@ -163,10 +251,7 @@ struct leanring_buddyTests {
         sessionArchiveStore.prepareSessionRestoreDecisionForCurrentLaunch()
 
         let companionManager = await MainActor.run {
-            let settingsStore = ClickySettingsStore(
-                userDefaults: testStorageEnvironment.userDefaults,
-                keychainSecretStore: KeychainSecretStore()
-            )
+            let settingsStore = testStorageEnvironment.makeSettingsStore()
             settingsStore.conversationContextTurnLimit = 2
             return CompanionManager(
                 settingsStore: settingsStore,
@@ -196,10 +281,7 @@ struct leanring_buddyTests {
         try sessionArchiveStore.saveArchive(createdSessionArchive)
 
         let companionManager = await MainActor.run {
-            let settingsStore = ClickySettingsStore(
-                userDefaults: testStorageEnvironment.userDefaults,
-                keychainSecretStore: KeychainSecretStore()
-            )
+            let settingsStore = testStorageEnvironment.makeSettingsStore()
             return CompanionManager(
                 settingsStore: settingsStore,
                 sessionArchiveStore: sessionArchiveStore
@@ -235,10 +317,7 @@ struct leanring_buddyTests {
         sessionArchiveStore.prepareSessionRestoreDecisionForCurrentLaunch()
 
         let resumeManager = await MainActor.run {
-            let settingsStore = ClickySettingsStore(
-                userDefaults: testStorageEnvironment.userDefaults,
-                keychainSecretStore: KeychainSecretStore()
-            )
+            let settingsStore = testStorageEnvironment.makeSettingsStore()
             return CompanionManager(
                 settingsStore: settingsStore,
                 sessionArchiveStore: sessionArchiveStore
@@ -258,10 +337,7 @@ struct leanring_buddyTests {
         sessionArchiveStore.prepareSessionRestoreDecisionForCurrentLaunch()
 
         let startFreshManager = await MainActor.run {
-            let settingsStore = ClickySettingsStore(
-                userDefaults: testStorageEnvironment.userDefaults,
-                keychainSecretStore: KeychainSecretStore()
-            )
+            let settingsStore = testStorageEnvironment.makeSettingsStore()
             return CompanionManager(
                 settingsStore: settingsStore,
                 sessionArchiveStore: sessionArchiveStore
@@ -293,6 +369,47 @@ struct leanring_buddyTests {
         #expect(!sessionArchiveStore.archiveExists(for: createdSessionArchive.sessionID))
         #expect(sessionArchiveStore.activeSessionID == nil)
         #expect(!sessionArchiveStore.hasPendingSessionRestoreDecision)
+    }
+
+    @Test func managerRequestConfigurationUsesSelectedProviderSettings() async throws {
+        let testStorageEnvironment = TestStorageEnvironment()
+        defer { testStorageEnvironment.cleanup() }
+
+        let companionManager = await MainActor.run {
+            let settingsStore = testStorageEnvironment.makeSettingsStore()
+            settingsStore.selectedProvider = .openAI
+            settingsStore.endpointURLString = "https://api.openai.com"
+            settingsStore.modelID = "gpt-5.2-2025-12-11"
+            settingsStore.apiKey = "openai-key"
+
+            return CompanionManager(
+                settingsStore: settingsStore,
+                sessionArchiveStore: testStorageEnvironment.makeSessionArchiveStore()
+            )
+        }
+
+        let openAIRequestConfiguration = try #require(await MainActor.run {
+            companionManager.currentAIRequestConfiguration()
+        })
+        #expect(openAIRequestConfiguration.provider == .openAI)
+        #expect(openAIRequestConfiguration.endpointURL.absoluteString == "https://api.openai.com/v1/chat/completions")
+        #expect(openAIRequestConfiguration.modelID == "gpt-5.2-2025-12-11")
+        #expect(openAIRequestConfiguration.apiKey == "openai-key")
+
+        await MainActor.run {
+            companionManager.settingsStore.selectedProvider = .anthropic
+            companionManager.settingsStore.endpointURLString = "https://api.anthropic.com"
+            companionManager.settingsStore.modelID = "claude-sonnet-4-6"
+            companionManager.settingsStore.apiKey = "anthropic-key"
+        }
+
+        let anthropicRequestConfiguration = try #require(await MainActor.run {
+            companionManager.currentAIRequestConfiguration()
+        })
+        #expect(anthropicRequestConfiguration.provider == .anthropic)
+        #expect(anthropicRequestConfiguration.endpointURL.absoluteString == "https://api.anthropic.com/v1/messages")
+        #expect(anthropicRequestConfiguration.modelID == "claude-sonnet-4-6")
+        #expect(anthropicRequestConfiguration.apiKey == "anthropic-key")
     }
 
     @Test func pointCoordinateParserExtractsDisplayTextAndCoordinate() async throws {

@@ -1,83 +1,62 @@
 //
 //  OpenAIAPI.swift
-//  OpenAI API Implementation
+//  leanring-buddy
+//
+//  OpenAI-compatible streaming vision client used by Clicky.
 //
 
 import Foundation
 
-/// OpenAI API helper for vision analysis
-class OpenAIAPI {
+final class OpenAIAPI {
+    private static let tlsWarmupLock = NSLock()
+    private static var warmedHosts = Set<String>()
+
+    private let endpointURL: URL
     private let apiKey: String
-    private let apiURL: URL
-    private let model: String
+    let modelID: String
     private let session: URLSession
 
-    init(apiKey: String, model: String = "gpt-5.2-2025-12-11") {
+    init(endpointURL: URL, apiKey: String, modelID: String) {
+        self.endpointURL = endpointURL
         self.apiKey = apiKey
-        self.apiURL = URL(string: "https://api.openai.com/v1/chat/completions")!
-        self.model = model
+        self.modelID = modelID
 
-        // Use .default instead of .ephemeral so TLS session tickets are cached.
-        // Ephemeral sessions do a full TLS handshake on every request, which causes
-        // transient -1200 (errSSLPeerHandshakeFail) errors with large image payloads.
-        // Disable URL/cookie caching to avoid storing responses or credentials on disk.
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 120
-        config.timeoutIntervalForResource = 300
-        config.waitsForConnectivity = true
-        config.urlCache = nil
-        config.httpCookieStorage = nil
-        self.session = URLSession(configuration: config)
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 120
+        configuration.timeoutIntervalForResource = 300
+        configuration.waitsForConnectivity = true
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        self.session = URLSession(configuration: configuration)
 
-        // Fire a lightweight HEAD request in the background to pre-establish the TLS
-        // connection. This caches the TLS session ticket so the first real API call
-        // (which carries a large image payload) doesn't need a cold TLS handshake.
-        warmUpTLSConnection()
+        warmUpTLSConnectionIfNeeded()
     }
 
-    /// Sends a no-op HEAD request to the API host to establish and cache a TLS session.
-    /// Failures are silently ignored — this is purely an optimization.
-    private func warmUpTLSConnection() {
-        var warmupRequest = URLRequest(url: apiURL)
-        warmupRequest.httpMethod = "HEAD"
-        warmupRequest.timeoutInterval = 10
-        session.dataTask(with: warmupRequest) { _, _, _ in
-            // Response doesn't matter — the TLS handshake is the goal
-        }.resume()
-    }
-
-    /// Send a vision request to OpenAI with one or more labeled images.
-    func analyzeImage(
+    func analyzeImageStreaming(
         images: [(data: Data, label: String)],
         systemPrompt: String,
-        conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
-        userPrompt: String
-    ) async throws -> (text: String, duration: TimeInterval) {
-        let startTime = Date()
-
-        // Build request
-        var request = URLRequest(url: apiURL)
+        conversationHistory: [(userPrompt: String, assistantResponse: String)] = [],
+        userPrompt: String,
+        onTextChunk: @MainActor @Sendable (String) -> Void
+    ) async throws -> String {
+        var request = URLRequest(url: endpointURL)
         request.httpMethod = "POST"
         request.timeoutInterval = 120
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        // Build messages array
-        var messages: [[String: Any]] = []
+        var messages: [[String: Any]] = [
+            [
+                "role": "system",
+                "content": systemPrompt
+            ]
+        ]
 
-        // Add system message first
-        messages.append([
-            "role": "system",
-            "content": systemPrompt
-        ])
-
-        // Add conversation history
-        for (userPlaceholder, assistantResponse) in conversationHistory {
-            messages.append(["role": "user", "content": userPlaceholder])
-            messages.append(["role": "assistant", "content": assistantResponse])
+        for historyEntry in conversationHistory {
+            messages.append(["role": "user", "content": historyEntry.userPrompt])
+            messages.append(["role": "assistant", "content": historyEntry.assistantResponse])
         }
 
-        // Build current message with all labeled images + prompt
         var contentBlocks: [[String: Any]] = []
         for image in images {
             contentBlocks.append([
@@ -87,7 +66,7 @@ class OpenAIAPI {
             contentBlocks.append([
                 "type": "image_url",
                 "image_url": [
-                    "url": "data:image/jpeg;base64,\(image.data.base64EncodedString())"
+                    "url": "data:\(detectImageMediaType(for: image.data));base64,\(image.data.base64EncodedString())"
                 ]
             ])
         }
@@ -97,46 +76,108 @@ class OpenAIAPI {
         ])
         messages.append(["role": "user", "content": contentBlocks])
 
-        // Build request body
         let body: [String: Any] = [
-            "model": model,
-            // `max_tokens` is deprecated/incompatible for some newer OpenAI models.
+            "model": modelID,
             "max_completion_tokens": 600,
+            "stream": true,
             "messages": messages
         ]
 
-        let bodyData = try JSONSerialization.data(withJSONObject: body)
-        request.httpBody = bodyData
-        let payloadMB = Double(bodyData.count) / 1_048_576.0
-        print("🌐 OpenAI request: \(String(format: "%.1f", payloadMB))MB, \(images.count) image(s)")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        // Send request
-        let (data, response) = try await session.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
-            let responseString = String(data: data, encoding: .utf8) ?? "Unknown error"
-            throw NSError(
-                domain: "OpenAIAPI",
-                code: (response as? HTTPURLResponse)?.statusCode ?? -1,
-                userInfo: [NSLocalizedDescriptionKey: "API Error: \(responseString)"]
-            )
-        }
-
-        // Parse response
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        guard let choices = json?["choices"] as? [[String: Any]],
-              let firstChoice = choices.first,
-              let message = firstChoice["message"] as? [String: Any],
-              let text = message["content"] as? String else {
+        let (byteStream, response) = try await session.bytes(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
             throw NSError(
                 domain: "OpenAIAPI",
                 code: -1,
-                userInfo: [NSLocalizedDescriptionKey: "Invalid response format"]
+                userInfo: [NSLocalizedDescriptionKey: "Invalid HTTP response."]
             )
         }
 
-        let duration = Date().timeIntervalSince(startTime)
-        return (text: text, duration: duration)
+        guard (200...299).contains(httpResponse.statusCode) else {
+            var errorLines: [String] = []
+            for try await line in byteStream.lines {
+                errorLines.append(line)
+            }
+            throw NSError(
+                domain: "OpenAIAPI",
+                code: httpResponse.statusCode,
+                userInfo: [NSLocalizedDescriptionKey: errorLines.joined(separator: "\n")]
+            )
+        }
+
+        var accumulatedResponseText = ""
+        for try await line in byteStream.lines {
+            guard line.hasPrefix("data: ") else { continue }
+            let jsonString = String(line.dropFirst(6))
+            guard jsonString != "[DONE]" else { break }
+
+            guard let jsonData = jsonString.data(using: .utf8),
+                  let payload = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+                  let choices = payload["choices"] as? [[String: Any]],
+                  let firstChoice = choices.first,
+                  let delta = firstChoice["delta"] as? [String: Any] else {
+                continue
+            }
+
+            let responseTextChunk = extractResponseTextChunk(from: delta)
+            guard !responseTextChunk.isEmpty else {
+                continue
+            }
+
+            accumulatedResponseText += responseTextChunk
+            await onTextChunk(accumulatedResponseText)
+        }
+
+        return accumulatedResponseText
+    }
+
+    private func warmUpTLSConnectionIfNeeded() {
+        guard let host = endpointURL.host else { return }
+
+        Self.tlsWarmupLock.lock()
+        let shouldWarmHost = !Self.warmedHosts.contains(host)
+        if shouldWarmHost {
+            Self.warmedHosts.insert(host)
+        }
+        Self.tlsWarmupLock.unlock()
+
+        guard shouldWarmHost else { return }
+        guard var warmupComponents = URLComponents(url: endpointURL, resolvingAgainstBaseURL: false) else { return }
+        warmupComponents.path = "/"
+        warmupComponents.query = nil
+        warmupComponents.fragment = nil
+        guard let warmupURL = warmupComponents.url else { return }
+
+        var request = URLRequest(url: warmupURL)
+        request.httpMethod = "HEAD"
+        request.timeoutInterval = 10
+
+        session.dataTask(with: request) { _, _, _ in }.resume()
+    }
+
+    private func extractResponseTextChunk(from delta: [String: Any]) -> String {
+        if let content = delta["content"] as? String {
+            return content
+        }
+
+        if let contentBlocks = delta["content"] as? [[String: Any]] {
+            return contentBlocks.compactMap { contentBlock in
+                contentBlock["text"] as? String
+            }.joined()
+        }
+
+        return ""
+    }
+
+    private func detectImageMediaType(for imageData: Data) -> String {
+        if imageData.count >= 4 {
+            let pngSignature = [UInt8](imageData.prefix(4))
+            if pngSignature == [0x89, 0x50, 0x4E, 0x47] {
+                return "image/png"
+            }
+        }
+
+        return "image/jpeg"
     }
 }

@@ -2,7 +2,7 @@
 //  CompanionPanelView.swift
 //  leanring-buddy
 //
-//  Lean settings panel for configuring Clicky's direct Anthropic-compatible workflow.
+//  Lean settings panel for configuring Clicky's direct provider-based workflow.
 //
 
 import KeyboardShortcuts
@@ -92,12 +92,32 @@ struct CompanionPanelView: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
+                Text("Provider")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Picker(
+                    "Provider",
+                    selection: Binding(
+                        get: { settingsStore.selectedProvider },
+                        set: { settingsStore.selectedProvider = $0 }
+                    )
+                ) {
+                    ForEach(AIProvider.allCases) { provider in
+                        Text(provider.displayName)
+                            .tag(provider)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
                 Text("Endpoint")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(DS.Colors.textSecondary)
 
                 TextField(
-                    "https://api.anthropic.com or a full /v1/messages URL",
+                    settingsStore.selectedProvider.endpointFieldPlaceholder,
                     text: Binding(
                         get: { settingsStore.endpointURLString },
                         set: { settingsStore.endpointURLString = $0 }
@@ -117,7 +137,7 @@ struct CompanionPanelView: View {
                     .foregroundColor(DS.Colors.textSecondary)
 
                 SecureField(
-                    "sk-ant-...",
+                    settingsStore.selectedProvider.apiKeyFieldPlaceholder,
                     text: Binding(
                         get: { settingsStore.apiKey },
                         set: { settingsStore.apiKey = $0 }
@@ -137,7 +157,7 @@ struct CompanionPanelView: View {
                     .foregroundColor(DS.Colors.textSecondary)
 
                 TextField(
-                    "claude-sonnet-4-6",
+                    settingsStore.selectedProvider.defaultModelID,
                     text: Binding(
                         get: { settingsStore.modelID },
                         set: { settingsStore.modelID = $0 }
@@ -242,11 +262,15 @@ struct CompanionPanelView: View {
                     )
                     .fixedSize(horizontal: false, vertical: true)
             } else if !settingsStore.isConfigurationComplete {
-                helperCopy("Fill in the endpoint, API key, and model, then use your shortcut to open the prompt composer.")
+                helperCopy(
+                    "Fill in the \(settingsStore.selectedProvider.displayName) endpoint, API key, and model, then use your shortcut to open the prompt composer."
+                )
             } else if !settingsStore.hasConfiguredShortcut {
                 helperCopy("Record a shortcut so you can open the prompt composer from anywhere.")
             } else {
-                helperCopy("Clicky will capture your current cursor screen only when you send a prompt.")
+                helperCopy(
+                    "Clicky will use your selected \(settingsStore.selectedProvider.displayName) configuration and capture your current cursor screen only when you send a prompt."
+                )
             }
         }
     }
@@ -299,7 +323,7 @@ struct CompanionPanelView: View {
 
     private var footer: some View {
         HStack {
-            Text("Anthropic-compatible endpoint")
+            Text(settingsStore.selectedProvider.footerEndpointDescription)
                 .font(.system(size: 11))
                 .foregroundColor(DS.Colors.textTertiary)
 
