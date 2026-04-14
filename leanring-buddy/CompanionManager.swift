@@ -510,7 +510,7 @@ final class CompanionManager: ObservableObject {
                 let screenCapture = try await CompanionScreenCaptureUtility.captureCursorScreenAsJPEG()
                 guard !Task.isCancelled else { return }
 
-                responseOverlayManager.beginStreaming(on: screenCapture.screen, referencePoint: requestMouseLocation)
+                responseOverlayManager.beginStreaming(on: screenCapture.screen)
                 displayedResponseText = ""
 
                 let labeledImage = (
@@ -562,7 +562,6 @@ final class CompanionManager: ObservableObject {
                     detectedElementScreenLocation = mappedLocation
                     detectedElementDisplayFrame = screenCapture.displayFrame
                     detectedElementBubbleText = parseResult.elementLabel ?? "right here"
-                    responseOverlayManager.updateAnchorIfNeeded(for: mappedLocation)
                 }
             } catch is CancellationError {
                 if activeRequestIdentifier == requestIdentifier {
@@ -573,7 +572,7 @@ final class CompanionManager: ObservableObject {
                 displayedResponseText = errorMessage
                 if activeRequestIdentifier == requestIdentifier,
                    let targetScreen = NSScreen.screenContainingPoint(requestMouseLocation) {
-                    responseOverlayManager.presentError(errorMessage, on: targetScreen, referencePoint: requestMouseLocation)
+                    responseOverlayManager.presentError(errorMessage, on: targetScreen)
                 }
             }
         }

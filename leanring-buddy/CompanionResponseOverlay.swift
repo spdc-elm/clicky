@@ -14,11 +14,6 @@ private final class FocusableResponsePanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-private enum ResponsePanelAnchor {
-    case bottomCenter
-    case topCenter
-}
-
 @MainActor
 final class CompanionResponseOverlayViewModel: ObservableObject {
     @Published var responseText: String = ""
@@ -31,18 +26,16 @@ final class CompanionResponseOverlayManager: NSObject, NSWindowDelegate {
     private let overlayViewModel = CompanionResponseOverlayViewModel()
     private var overlayPanel: NSPanel?
     private var targetScreen: NSScreen?
-    private var currentAnchor: ResponsePanelAnchor = .bottomCenter
     private var currentResponseIdentifier = UUID()
     private var panelSize = CGSize(width: 680, height: 320)
     private let minimumPanelSize = CGSize(width: 440, height: 220)
 
-    func beginStreaming(on screen: NSScreen, referencePoint: CGPoint) {
+    func beginStreaming(on screen: NSScreen) {
         currentResponseIdentifier = UUID()
         overlayViewModel.responseText = ""
         overlayViewModel.isStreamingResponse = true
         overlayViewModel.responseIdentifier = currentResponseIdentifier
         targetScreen = screen
-        currentAnchor = anchor(for: referencePoint, in: screen)
         createOverlayPanelIfNeeded()
         resizeAndPositionPanel()
         overlayPanel?.alphaValue = 1
@@ -58,18 +51,10 @@ final class CompanionResponseOverlayManager: NSObject, NSWindowDelegate {
         overlayViewModel.isStreamingResponse = false
     }
 
-    func presentError(_ errorText: String, on screen: NSScreen, referencePoint: CGPoint) {
-        beginStreaming(on: screen, referencePoint: referencePoint)
+    func presentError(_ errorText: String, on screen: NSScreen) {
+        beginStreaming(on: screen)
         overlayViewModel.responseText = errorText
         overlayViewModel.isStreamingResponse = false
-    }
-
-    func updateAnchorIfNeeded(for referencePoint: CGPoint) {
-        guard let targetScreen else { return }
-        let updatedAnchor = anchor(for: referencePoint, in: targetScreen)
-        guard currentAnchor == .bottomCenter, updatedAnchor == .topCenter else { return }
-        currentAnchor = updatedAnchor
-        resizeAndPositionPanel()
     }
 
     func hideOverlay() {
@@ -120,14 +105,7 @@ final class CompanionResponseOverlayManager: NSObject, NSWindowDelegate {
         let panelHeight = min(panelSize.height, visibleFrame.height * 0.6)
         let verticalMargin: CGFloat = 20
 
-        let panelOriginY: CGFloat
-        switch currentAnchor {
-        case .bottomCenter:
-            panelOriginY = visibleFrame.minY + verticalMargin
-        case .topCenter:
-            panelOriginY = visibleFrame.maxY - panelHeight - verticalMargin
-        }
-
+        let panelOriginY = visibleFrame.minY + verticalMargin
         let panelOriginX = visibleFrame.midX - (panelWidth / 2)
         let panelFrame = CGRect(x: panelOriginX, y: panelOriginY, width: panelWidth, height: panelHeight)
         overlayPanel.setFrame(panelFrame, display: true)
@@ -137,12 +115,6 @@ final class CompanionResponseOverlayManager: NSObject, NSWindowDelegate {
     func windowDidResize(_ notification: Notification) {
         guard let resizedPanel = notification.object as? NSPanel else { return }
         panelSize = resizedPanel.frame.size
-    }
-
-    private func anchor(for referencePoint: CGPoint, in screen: NSScreen) -> ResponsePanelAnchor {
-        let visibleFrame = screen.visibleFrame
-        let bottomThreshold = visibleFrame.minY + (visibleFrame.height * 0.35)
-        return referencePoint.y <= bottomThreshold ? .topCenter : .bottomCenter
     }
 }
 

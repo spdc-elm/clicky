@@ -18,7 +18,7 @@ API credentials are stored locally in Keychain. The app can talk directly to an 
 - **Shortcut Handling**: Global shortcut registration and recording via `KeyboardShortcuts`
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), current cursor screen only
 - **Input UX**: Centered prompt composer overlay with a session context sidebar, restorable session chooser, history detail panel, and multiline text input
-- **Response UX**: Scrollable floating response panel anchored bottom-center by default, with top fallback when lower-screen content would be obscured
+- **Response UX**: Scrollable floating response panel anchored bottom-center, with manual drag, resize, and scroll handling for longer replies
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
 - **Analytics**: PostHog via `ClickyAnalytics.swift`
@@ -54,7 +54,7 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `leanring_buddyApp.swift` | ~50 | Menu bar app entry point. Creates `CompanionManager`, launches the cursor overlay, and auto-opens the settings panel when configuration is incomplete. |
 | `CompanionManager.swift` | ~657 | Central text-first state machine. Owns prompt composer flow, session restore/new-session behavior, JSON-backed archive integration, screenshot capture, response streaming, context-window derivation, and pointing state. |
 | `PromptComposerOverlay.swift` | ~772 | Centered prompt composer overlay built with a key-capable `NSPanel`, a clickable session history sidebar, a restore chooser, a full-turn detail panel, and a custom multiline `NSTextView` bridge. |
-| `CompanionResponseOverlay.swift` | ~295 | Scrollable floating response panel that streams text, supports manual scrolling, and anchors bottom-center or top-center based on screen context. |
+| `CompanionResponseOverlay.swift` | ~295 | Scrollable floating response panel that streams text, supports manual scrolling, and stays anchored bottom-center. |
 | `MenuBarPanelManager.swift` | ~236 | NSStatusItem + custom NSPanel lifecycle for the settings dropdown. |
 | `CompanionPanelView.swift` | ~357 | SwiftUI settings panel. Edits endpoint URL, API key, model ID, context turn count, the global shortcut, and session archive actions, and surfaces Screen Recording status. |
 | `SessionArchiveStore.swift` | ~231 | JSON-backed session persistence layer. Stores active session metadata in `UserDefaults` and full completed conversation turns in Application Support archives. |
