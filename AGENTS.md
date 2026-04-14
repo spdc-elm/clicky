@@ -22,7 +22,8 @@ API credentials are stored locally in Keychain. The app can talk directly to eit
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
 - **Analytics**: PostHog via `ClickyAnalytics.swift`
-- **Session Persistence**: Completed conversation turns are archived as JSON session files under Application Support, separate from the in-memory AI context window.
+- **Prompt Management**: Bundled default Markdown prompts live in the app bundle and can be overridden at runtime from `~/.clicky/prompts/`
+- **Session Persistence**: Completed conversation turns are archived as JSON session files under `~/.clicky/sessions`, separate from the in-memory AI context window. Legacy Application Support archives are migrated there on first use.
 
 ### Optional API Proxy
 
@@ -45,6 +46,8 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 
 **Session Archive Split**: Clicky now separates the persistent session archive from the transient AI context window. Full completed turns are saved as JSON session events, while only the most recent configured turns are shown in the composer sidebar and sent back to the model.
 
+**Prompt Override Home**: Prompt files now follow a fixed `~/.clicky` home convention. Clicky reads `~/.clicky/prompts/*.md` on each request, seeds that folder with bundled defaults for direct editing, rewrites invalid prompt files back to the default template, and exposes the prompt directory from the settings panel for quick editing.
+
 **Direct Endpoint Configuration**: Provider, endpoint URL, API key, and model ID are configured at runtime. Each provider keeps its own endpoint/model/API-key settings so users can switch between Anthropic and OpenAI without re-entering credentials.
 
 ## Key Files
@@ -55,8 +58,10 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `CompanionManager.swift` | ~950 | Central text-first state machine. Owns prompt composer flow, session restore/new-session behavior, temporary current-turn state, JSON-backed archive integration, screenshot capture, provider-based response streaming, context-window derivation, and pointing state. |
 | `PromptComposerOverlay.swift` | ~970 | Centered prompt composer overlay built with a key-capable `NSPanel`, a clickable session history sidebar, inline current-turn/detail cards, a restore chooser, and a custom multiline `NSTextView` bridge. |
 | `MenuBarPanelManager.swift` | ~236 | NSStatusItem + custom NSPanel lifecycle for the settings dropdown. |
-| `CompanionPanelView.swift` | ~380 | SwiftUI settings panel. Edits provider-specific endpoint URL, API key, model ID, context turn count, the global shortcut, and session archive actions, and surfaces Screen Recording status. |
-| `SessionArchiveStore.swift` | ~231 | JSON-backed session persistence layer. Stores active session metadata in `UserDefaults` and full completed conversation turns in Application Support archives. |
+| `CompanionPanelView.swift` | ~404 | SwiftUI settings panel. Edits provider-specific endpoint URL, API key, model ID, context turn count, the global shortcut, and actions for prompt overrides and session archives, and surfaces Screen Recording status. |
+| `SessionArchiveStore.swift` | ~333 | JSON-backed session persistence layer. Stores active session metadata in `UserDefaults`, writes full completed conversation turns under `~/.clicky/sessions`, and migrates legacy Application Support archives on first use. |
+| `ClickyHomePaths.swift` | ~42 | Shared path conventions for Clicky's `~/.clicky` home, prompt overrides, session archives, and legacy archive migration source. |
+| `ClickyPromptStore.swift` | ~182 | Prompt resolver that prefers `~/.clicky/prompts` overrides and falls back to bundled Markdown defaults with validation. |
 | `OverlayWindow.swift` | ~392 | Full-screen transparent overlay hosting the blue cursor, processing spinner, and pointing animation. |
 | `CompanionScreenCaptureUtility.swift` | ~96 | Captures the current cursor screen with ScreenCaptureKit while excluding Clicky's own windows. |
 | `ClaudeAPI.swift` | ~166 | Anthropic-compatible SSE client with runtime endpoint/API key/model configuration and TLS warmup. |

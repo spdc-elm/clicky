@@ -209,6 +209,29 @@ struct CompanionPanelView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
+                Text("Prompt Overrides")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Button(action: companionManager.openPromptOverridesFolder) {
+                    Text("Open Prompt Folder")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(DS.Colors.textSecondary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .stroke(DS.Colors.borderSubtle, lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+
+                helperCopy("Prompt files live in ~/.clicky/prompts. Clicky exports the bundled defaults there and rewrites invalid files back to the default template.")
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
                 Text("Session Archives")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(DS.Colors.textSecondary)
@@ -247,7 +270,7 @@ struct CompanionPanelView: View {
                     .pointerCursor()
                 }
 
-                helperCopy("Session JSON files live in Application Support under Clicky/Sessions.")
+                helperCopy("Session JSON files live in ~/.clicky/sessions. Clicky migrates legacy Application Support archives there once.")
             }
 
             if !companionManager.hasScreenRecordingPermission {

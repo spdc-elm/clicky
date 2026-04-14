@@ -77,6 +77,7 @@ struct AIRequestConfiguration: Equatable {
 typealias ScreenCaptureProvider = @MainActor @Sendable () async throws -> CompanionScreenCapture
 typealias StreamingResponseAnalyzer = @MainActor @Sendable (
     AIRequestConfiguration,
+    String,
     [(data: Data, label: String)],
     [(userPrompt: String, assistantResponse: String)],
     String,
@@ -107,6 +108,7 @@ final class CompanionManager: ObservableObject {
     private lazy var promptComposerPanelManager = PromptComposerPanelManager(companionManager: self)
 
     private let sessionArchiveStore: SessionArchiveStore
+    private let promptStore: ClickyPromptStore
     private let screenCaptureProvider: ScreenCaptureProvider
     private let streamingResponseAnalyzer: StreamingResponseAnalyzer
     private var recoverableSessionArchive: ClickySessionArchive?
@@ -119,6 +121,7 @@ final class CompanionManager: ObservableObject {
         self.init(
             settingsStore: ClickySettingsStore(),
             sessionArchiveStore: SessionArchiveStore(),
+            promptStore: ClickyPromptStore(),
             overlayWindowManager: OverlayWindowManager(),
             hasScreenRecordingPermission: false,
             screenCaptureProvider: CompanionScreenCaptureUtility.captureCursorScreenAsJPEG,
@@ -133,6 +136,7 @@ final class CompanionManager: ObservableObject {
         self.init(
             settingsStore: settingsStore,
             sessionArchiveStore: sessionArchiveStore,
+            promptStore: ClickyPromptStore(),
             overlayWindowManager: OverlayWindowManager(),
             hasScreenRecordingPermission: false,
             screenCaptureProvider: CompanionScreenCaptureUtility.captureCursorScreenAsJPEG,
@@ -143,6 +147,7 @@ final class CompanionManager: ObservableObject {
     init(
         settingsStore: ClickySettingsStore,
         sessionArchiveStore: SessionArchiveStore,
+        promptStore: ClickyPromptStore = ClickyPromptStore(),
         overlayWindowManager: OverlayWindowManager,
         hasScreenRecordingPermission: Bool = false,
         screenCaptureProvider: @escaping ScreenCaptureProvider = CompanionScreenCaptureUtility.captureCursorScreenAsJPEG,
@@ -150,6 +155,7 @@ final class CompanionManager: ObservableObject {
     ) {
         self.settingsStore = settingsStore
         self.sessionArchiveStore = sessionArchiveStore
+        self.promptStore = promptStore
         self.overlayWindowManager = overlayWindowManager
         self.hasScreenRecordingPermission = hasScreenRecordingPermission
         self.screenCaptureProvider = screenCaptureProvider
@@ -436,6 +442,24 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    func openPromptOverridesFolder() {
+        do {
+            let promptsDirectoryURL = try promptStore.promptsDirectoryURLForOpening()
+            let didOpenDirectory = NSWorkspace.shared.open(promptsDirectoryURL)
+
+            if didOpenDirectory {
+                settingsPanelFeedbackMessage = "Opened Prompt Overrides in Finder."
+                settingsPanelFeedbackIsError = false
+            } else {
+                settingsPanelFeedbackMessage = "Clicky couldn't open the Prompt Overrides folder."
+                settingsPanelFeedbackIsError = true
+            }
+        } catch {
+            settingsPanelFeedbackMessage = "Clicky couldn't prepare the Prompt Overrides folder."
+            settingsPanelFeedbackIsError = true
+        }
+    }
+
     func clearAllSessionArchives() {
         cancelActiveRequestAndResetTransientUI()
 
@@ -706,6 +730,7 @@ final class CompanionManager: ObservableObject {
             }
 
             do {
+                let resolvedSystemPrompt = try promptStore.resolvedPrompt(for: .textResponseSystem)
                 let screenCapture = try await screenCaptureProvider()
                 guard !Task.isCancelled else { return }
 
@@ -729,6 +754,7 @@ final class CompanionManager: ObservableObject {
 
                 let fullResponseText = try await streamingResponseAnalyzer(
                     requestConfiguration,
+                    resolvedSystemPrompt.text,
                     [labeledImage],
                     conversationHistoryForRequest,
                     prompt,
@@ -796,6 +822,7 @@ final class CompanionManager: ObservableObject {
 
     static func defaultStreamingResponseAnalyzer(
         requestConfiguration: AIRequestConfiguration,
+        systemPrompt: String,
         images: [(data: Data, label: String)],
         conversationHistoryForRequest: [(userPrompt: String, assistantResponse: String)],
         userPrompt: String,
@@ -811,7 +838,7 @@ final class CompanionManager: ObservableObject {
 
             return try await claudeAPI.analyzeImageStreaming(
                 images: images,
-                systemPrompt: Self.textResponseSystemPrompt,
+                systemPrompt: systemPrompt,
                 conversationHistory: conversationHistoryForRequest,
                 userPrompt: userPrompt,
                 onTextChunk: onTextChunk
@@ -825,7 +852,7 @@ final class CompanionManager: ObservableObject {
 
             return try await openAIAPI.analyzeImageStreaming(
                 images: images,
-                systemPrompt: Self.textResponseSystemPrompt,
+                systemPrompt: systemPrompt,
                 conversationHistory: conversationHistoryForRequest,
                 userPrompt: userPrompt,
                 onTextChunk: onTextChunk
@@ -860,25 +887,6 @@ final class CompanionManager: ObservableObject {
             y: appKitY + screenCapture.displayFrame.origin.y
         )
     }
-
-    private static let textResponseSystemPrompt = """
-    you're clicky, a small blue cursor buddy living on the user's mac. the user asked a question while looking at their screen. write for on-screen reading, not for speech.
-
-    rules:
-    - default to short, dense paragraphs.
-    - plain text only. no markdown tables.
-    - if the screenshot is relevant, reference what you can actually see.
-    - if the question is conceptual and the screenshot is irrelevant, answer directly.
-    - be concrete when explaining code, command output, or UI.
-    - if you receive a screenshot label with image dimensions, use that coordinate space for pointing.
-
-    element pointing:
-    - if pointing would help, append a single terminal tag in this exact format: [POINT:x,y:label]
-    - if no pointing is useful, append [POINT:none]
-    - coordinates use the screenshot image space where origin is top-left
-    - keep the label short, 1 to 3 words
-    - the point tag must be the final thing in the response
-    """
 
     struct PointingParseResult {
         let displayText: String

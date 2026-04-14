@@ -100,22 +100,30 @@ final class SessionArchiveStore {
     private enum UserDefaultsKey {
         static let activeSessionID = "clicky.activeSessionID"
         static let hasPendingSessionRestoreDecision = "clicky.hasPendingSessionRestoreDecision"
+        static let hasMigratedLegacySessionsToClickyHome = "clicky.hasMigratedLegacySessionsToClickyHome"
     }
 
     private let fileManager: FileManager
     private let userDefaults: UserDefaults
     private let sessionsDirectoryURL: URL
+    private let legacySessionsDirectoryURL: URL
     private let jsonEncoder: JSONEncoder
     private let jsonDecoder: JSONDecoder
+    private var hasEnsuredSessionDirectoriesAreReady = false
 
     init(
         fileManager: FileManager = .default,
         userDefaults: UserDefaults = .standard,
-        sessionsDirectoryURL: URL? = nil
+        clickyHomePaths: ClickyHomePaths = ClickyHomePaths(),
+        sessionsDirectoryURL: URL? = nil,
+        legacySessionsDirectoryURL: URL? = nil
     ) {
         self.fileManager = fileManager
         self.userDefaults = userDefaults
-        self.sessionsDirectoryURL = sessionsDirectoryURL ?? Self.defaultSessionsDirectoryURL(fileManager: fileManager)
+        self.sessionsDirectoryURL = sessionsDirectoryURL
+            ?? Self.defaultSessionsDirectoryURL(fileManager: fileManager, clickyHomePaths: clickyHomePaths)
+        self.legacySessionsDirectoryURL = legacySessionsDirectoryURL
+            ?? Self.legacySessionsDirectoryURL(fileManager: fileManager, clickyHomePaths: clickyHomePaths)
 
         let jsonEncoder = JSONEncoder()
         jsonEncoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -154,6 +162,8 @@ final class SessionArchiveStore {
     }
 
     func prepareSessionRestoreDecisionForCurrentLaunch() {
+        try? ensureSessionDirectoriesAreReady()
+
         guard let activeSessionID else {
             hasPendingSessionRestoreDecision = false
             return
@@ -169,6 +179,7 @@ final class SessionArchiveStore {
     }
 
     func createNewConversationSession(createdAt: Date = Date()) throws -> ClickySessionArchive {
+        try ensureSessionDirectoriesAreReady()
         let conversationSession = ClickySessionArchive.emptyConversationSession(createdAt: createdAt)
         try saveArchive(conversationSession)
         activeSessionID = conversationSession.sessionID
@@ -177,6 +188,7 @@ final class SessionArchiveStore {
     }
 
     func loadRecoverableActiveSessionArchive() throws -> ClickySessionArchive? {
+        try ensureSessionDirectoriesAreReady()
         guard hasPendingSessionRestoreDecision, let activeSessionID else {
             return nil
         }
@@ -185,6 +197,7 @@ final class SessionArchiveStore {
     }
 
     func loadActiveSessionArchiveIfAvailable() throws -> ClickySessionArchive? {
+        try ensureSessionDirectoriesAreReady()
         guard let activeSessionID else {
             return nil
         }
@@ -193,6 +206,7 @@ final class SessionArchiveStore {
     }
 
     func loadArchive(for sessionID: UUID) throws -> ClickySessionArchive? {
+        try ensureSessionDirectoriesAreReady()
         let archiveURL = archiveFileURL(for: sessionID)
         guard fileManager.fileExists(atPath: archiveURL.path) else {
             return nil
@@ -203,12 +217,14 @@ final class SessionArchiveStore {
     }
 
     func saveArchive(_ archive: ClickySessionArchive) throws {
+        try ensureSessionDirectoriesAreReady()
         try ensureSessionsDirectoryExists()
         let archiveData = try jsonEncoder.encode(archive)
         try archiveData.write(to: archiveFileURL(for: archive.sessionID), options: .atomic)
     }
 
     func sessionsDirectoryURLForOpening() throws -> URL {
+        try ensureSessionDirectoriesAreReady()
         try ensureSessionsDirectoryExists()
         return sessionsDirectoryURL
     }
@@ -220,10 +236,13 @@ final class SessionArchiveStore {
 
         activeSessionID = nil
         hasPendingSessionRestoreDecision = false
+        userDefaults.set(true, forKey: UserDefaultsKey.hasMigratedLegacySessionsToClickyHome)
+        hasEnsuredSessionDirectoriesAreReady = true
     }
 
     func archiveExists(for sessionID: UUID) -> Bool {
-        fileManager.fileExists(atPath: archiveFileURL(for: sessionID).path)
+        try? ensureSessionDirectoriesAreReady()
+        return fileManager.fileExists(atPath: archiveFileURL(for: sessionID).path)
     }
 
     private func ensureSessionsDirectoryExists() throws {
@@ -234,12 +253,81 @@ final class SessionArchiveStore {
         sessionsDirectoryURL.appendingPathComponent("\(sessionID.uuidString).json", isDirectory: false)
     }
 
-    static func defaultSessionsDirectoryURL(fileManager: FileManager = .default) -> URL {
-        let applicationSupportDirectoryURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? fileManager.temporaryDirectory
+    private func ensureSessionDirectoriesAreReady() throws {
+        guard !hasEnsuredSessionDirectoriesAreReady else {
+            return
+        }
 
-        return applicationSupportDirectoryURL
-            .appendingPathComponent("Clicky", isDirectory: true)
-            .appendingPathComponent("Sessions", isDirectory: true)
+        if userDefaults.bool(forKey: UserDefaultsKey.hasMigratedLegacySessionsToClickyHome) {
+            hasEnsuredSessionDirectoriesAreReady = true
+            return
+        }
+
+        if sessionsDirectoryContainsArchivedSessionFiles() {
+            userDefaults.set(true, forKey: UserDefaultsKey.hasMigratedLegacySessionsToClickyHome)
+            hasEnsuredSessionDirectoriesAreReady = true
+            return
+        }
+
+        let legacyArchiveFileURLs = try legacyArchiveFileURLsForMigration()
+        guard !legacyArchiveFileURLs.isEmpty else {
+            userDefaults.set(true, forKey: UserDefaultsKey.hasMigratedLegacySessionsToClickyHome)
+            hasEnsuredSessionDirectoriesAreReady = true
+            return
+        }
+
+        try ensureSessionsDirectoryExists()
+        for legacyArchiveFileURL in legacyArchiveFileURLs {
+            let destinationArchiveFileURL = sessionsDirectoryURL
+                .appendingPathComponent(legacyArchiveFileURL.lastPathComponent, isDirectory: false)
+
+            guard !fileManager.fileExists(atPath: destinationArchiveFileURL.path) else {
+                continue
+            }
+
+            try fileManager.copyItem(at: legacyArchiveFileURL, to: destinationArchiveFileURL)
+        }
+
+        userDefaults.set(true, forKey: UserDefaultsKey.hasMigratedLegacySessionsToClickyHome)
+        hasEnsuredSessionDirectoriesAreReady = true
+    }
+
+    private func sessionsDirectoryContainsArchivedSessionFiles() -> Bool {
+        guard let archivedSessionFileNames = try? fileManager.contentsOfDirectory(atPath: sessionsDirectoryURL.path) else {
+            return false
+        }
+
+        return archivedSessionFileNames.contains { archivedSessionFileName in
+            archivedSessionFileName.hasSuffix(".json")
+        }
+    }
+
+    private func legacyArchiveFileURLsForMigration() throws -> [URL] {
+        guard fileManager.fileExists(atPath: legacySessionsDirectoryURL.path) else {
+            return []
+        }
+
+        let legacyDirectoryContents = try fileManager.contentsOfDirectory(
+            at: legacySessionsDirectoryURL,
+            includingPropertiesForKeys: nil
+        )
+
+        return legacyDirectoryContents.filter { legacyDirectoryEntryURL in
+            legacyDirectoryEntryURL.pathExtension == "json"
+        }
+    }
+
+    static func defaultSessionsDirectoryURL(
+        fileManager: FileManager = .default,
+        clickyHomePaths: ClickyHomePaths? = nil
+    ) -> URL {
+        (clickyHomePaths ?? ClickyHomePaths(fileManager: fileManager)).sessionsDirectoryURL
+    }
+
+    static func legacySessionsDirectoryURL(
+        fileManager: FileManager = .default,
+        clickyHomePaths: ClickyHomePaths? = nil
+    ) -> URL {
+        (clickyHomePaths ?? ClickyHomePaths(fileManager: fileManager)).legacySessionsDirectoryURL
     }
 }

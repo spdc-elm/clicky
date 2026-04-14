@@ -95,22 +95,50 @@ struct leanring_buddyTests {
     private struct TestStorageEnvironment {
         let suiteName: String
         let userDefaults: UserDefaults
-        let sessionsDirectoryURL: URL
+        let homeDirectoryURL: URL
+        let clickyHomePaths: ClickyHomePaths
+        let legacySessionsDirectoryURL: URL
+        let bundledPromptDefaultsDirectoryURL: URL
         let keychainSecretStore: KeychainSecretStore
 
         init() {
             suiteName = "clicky-tests-\(UUID().uuidString)"
             userDefaults = UserDefaults(suiteName: suiteName) ?? .standard
             userDefaults.removePersistentDomain(forName: suiteName)
-            sessionsDirectoryURL = FileManager.default.temporaryDirectory
+            homeDirectoryURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            clickyHomePaths = ClickyHomePaths(homeDirectoryURL: homeDirectoryURL)
+            legacySessionsDirectoryURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            bundledPromptDefaultsDirectoryURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString, isDirectory: true)
             keychainSecretStore = KeychainSecretStore(serviceName: "clicky-tests.\(UUID().uuidString)")
+
+            try? FileManager.default.createDirectory(
+                at: bundledPromptDefaultsDirectoryURL,
+                withIntermediateDirectories: true
+            )
+            try? """
+            bundled system prompt
+            """.write(
+                to: bundledPromptDefaultsDirectoryURL.appendingPathComponent("text-response-system.md"),
+                atomically: true,
+                encoding: .utf8
+            )
+            try? """
+            The question is: {{user_question}}
+            """.write(
+                to: bundledPromptDefaultsDirectoryURL.appendingPathComponent("element-location-user.md"),
+                atomically: true,
+                encoding: .utf8
+            )
         }
 
         func makeSessionArchiveStore() -> SessionArchiveStore {
             SessionArchiveStore(
                 userDefaults: userDefaults,
-                sessionsDirectoryURL: sessionsDirectoryURL
+                clickyHomePaths: clickyHomePaths,
+                legacySessionsDirectoryURL: legacySessionsDirectoryURL
             )
         }
 
@@ -122,12 +150,21 @@ struct leanring_buddyTests {
             )
         }
 
+        func makePromptStore() -> ClickyPromptStore {
+            ClickyPromptStore(
+                clickyHomePaths: clickyHomePaths,
+                bundledPromptDefaultsDirectoryURL: bundledPromptDefaultsDirectoryURL
+            )
+        }
+
         func cleanup() {
             for provider in AIProvider.allCases {
                 keychainSecretStore.deleteSecret(for: "clicky.\(provider.rawValue).apiKey")
             }
             userDefaults.removePersistentDomain(forName: suiteName)
-            try? FileManager.default.removeItem(at: sessionsDirectoryURL)
+            try? FileManager.default.removeItem(at: homeDirectoryURL)
+            try? FileManager.default.removeItem(at: legacySessionsDirectoryURL)
+            try? FileManager.default.removeItem(at: bundledPromptDefaultsDirectoryURL)
         }
     }
 
@@ -301,6 +338,154 @@ struct leanring_buddyTests {
         #expect(loadedSessionArchive == createdSessionArchive)
         #expect(loadedSessionArchive?.completedConversationTurns.count == 1)
         #expect(loadedSessionArchive?.completedConversationTurns.first?.userPromptText == "What changed in this PR?")
+    }
+
+    @Test func promptStoreUsesExternalOverrideBeforeBundledDefault() async throws {
+        let testStorageEnvironment = TestStorageEnvironment()
+        defer { testStorageEnvironment.cleanup() }
+
+        try FileManager.default.createDirectory(
+            at: testStorageEnvironment.clickyHomePaths.promptsDirectoryURL,
+            withIntermediateDirectories: true
+        )
+        let externalPromptFileURL = testStorageEnvironment.clickyHomePaths.promptsDirectoryURL
+            .appendingPathComponent("text-response-system.md")
+        try """
+        external system prompt
+        """.write(to: externalPromptFileURL, atomically: true, encoding: .utf8)
+
+        let resolvedPrompt = try testStorageEnvironment.makePromptStore().resolvedPrompt(for: .textResponseSystem)
+
+        #expect(resolvedPrompt.text == "external system prompt")
+        #expect(resolvedPrompt.source == .externalOverride(externalPromptFileURL))
+    }
+
+    @Test func promptStoreFallsBackToBundledDefaultWhenExternalPromptIsMissing() async throws {
+        let testStorageEnvironment = TestStorageEnvironment()
+        defer { testStorageEnvironment.cleanup() }
+
+        let resolvedPrompt = try testStorageEnvironment.makePromptStore().resolvedPrompt(for: .textResponseSystem)
+        let exportedPromptFileURL = testStorageEnvironment.clickyHomePaths.promptsDirectoryURL
+            .appendingPathComponent("text-response-system.md")
+        let exportedPromptText = try String(contentsOf: exportedPromptFileURL, encoding: .utf8)
+
+        #expect(resolvedPrompt.text == "bundled system prompt")
+        #expect(exportedPromptText == "bundled system prompt")
+    }
+
+    @Test func promptStoreFallsBackToBundledDefaultWhenExternalPromptIsInvalid() async throws {
+        let testStorageEnvironment = TestStorageEnvironment()
+        defer { testStorageEnvironment.cleanup() }
+
+        try FileManager.default.createDirectory(
+            at: testStorageEnvironment.clickyHomePaths.promptsDirectoryURL,
+            withIntermediateDirectories: true
+        )
+        let invalidExternalPromptFileURL = testStorageEnvironment.clickyHomePaths.promptsDirectoryURL
+            .appendingPathComponent("element-location-user.md")
+        try """
+        no placeholder here
+        """.write(to: invalidExternalPromptFileURL, atomically: true, encoding: .utf8)
+
+        let resolvedPrompt = try testStorageEnvironment.makePromptStore().resolvedPrompt(for: .elementLocationUser)
+        let repairedPromptText = try String(contentsOf: invalidExternalPromptFileURL, encoding: .utf8)
+
+        #expect(resolvedPrompt.text == "The question is: {{user_question}}")
+        #expect(repairedPromptText == "The question is: {{user_question}}")
+        if case .bundledDefault = resolvedPrompt.source {
+            #expect(Bool(true))
+        } else {
+            Issue.record("Expected the invalid external element-location prompt to fall back to the bundled default.")
+        }
+    }
+
+    @Test func promptStoreCreatesPromptOverridesDirectoryForOpening() async throws {
+        let testStorageEnvironment = TestStorageEnvironment()
+        defer { testStorageEnvironment.cleanup() }
+
+        let promptsDirectoryURL = try testStorageEnvironment.makePromptStore().promptsDirectoryURLForOpening()
+        let exportedSystemPromptFileURL = promptsDirectoryURL.appendingPathComponent("text-response-system.md")
+        let exportedElementPromptFileURL = promptsDirectoryURL.appendingPathComponent("element-location-user.md")
+
+        var isDirectory: ObjCBool = false
+        let promptDirectoryExists = FileManager.default.fileExists(
+            atPath: promptsDirectoryURL.path,
+            isDirectory: &isDirectory
+        )
+
+        #expect(promptDirectoryExists)
+        #expect(isDirectory.boolValue)
+        #expect(promptsDirectoryURL == testStorageEnvironment.clickyHomePaths.promptsDirectoryURL)
+        #expect(FileManager.default.fileExists(atPath: exportedSystemPromptFileURL.path))
+        #expect(FileManager.default.fileExists(atPath: exportedElementPromptFileURL.path))
+    }
+
+    @Test func elementLocationPromptTemplateRendersUserQuestion() async throws {
+        let testStorageEnvironment = TestStorageEnvironment()
+        defer { testStorageEnvironment.cleanup() }
+
+        let elementLocationDetector = ElementLocationDetector(
+            apiKey: "anthropic-key",
+            promptStore: testStorageEnvironment.makePromptStore()
+        )
+
+        let renderedPrompt = try elementLocationDetector.renderedElementLocationUserPrompt(
+            for: "Where should I click?"
+        )
+
+        #expect(renderedPrompt == "The question is: Where should I click?")
+    }
+
+    @Test func sessionArchiveStoreDefaultsToClickyHomeSessionsDirectory() async throws {
+        let testStorageEnvironment = TestStorageEnvironment()
+        defer { testStorageEnvironment.cleanup() }
+
+        let sessionArchiveStore = testStorageEnvironment.makeSessionArchiveStore()
+        let createdSessionArchive = try sessionArchiveStore.createNewConversationSession()
+        let expectedArchiveFileURL = testStorageEnvironment.clickyHomePaths.sessionsDirectoryURL
+            .appendingPathComponent("\(createdSessionArchive.sessionID.uuidString).json")
+
+        #expect(FileManager.default.fileExists(atPath: expectedArchiveFileURL.path))
+    }
+
+    @Test func sessionArchiveStoreMigratesLegacyArchivesIntoClickyHomeSessionsDirectory() async throws {
+        let testStorageEnvironment = TestStorageEnvironment()
+        defer { testStorageEnvironment.cleanup() }
+
+        try FileManager.default.createDirectory(
+            at: testStorageEnvironment.legacySessionsDirectoryURL,
+            withIntermediateDirectories: true
+        )
+
+        let legacySessionArchive = ClickySessionArchive.emptyConversationSession(
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+        ).appendingConversationTurn(
+            userPromptText: "Legacy question",
+            assistantResponseText: "Legacy answer",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_100)
+        )
+
+        let jsonEncoder = JSONEncoder()
+        jsonEncoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        jsonEncoder.dateEncodingStrategy = .iso8601
+        let legacyArchiveData = try jsonEncoder.encode(legacySessionArchive)
+        let legacyArchiveFileURL = testStorageEnvironment.legacySessionsDirectoryURL
+            .appendingPathComponent("\(legacySessionArchive.sessionID.uuidString).json")
+        try legacyArchiveData.write(to: legacyArchiveFileURL, options: .atomic)
+        testStorageEnvironment.userDefaults.set(
+            legacySessionArchive.sessionID.uuidString,
+            forKey: "clicky.activeSessionID"
+        )
+
+        let sessionArchiveStore = testStorageEnvironment.makeSessionArchiveStore()
+        sessionArchiveStore.prepareSessionRestoreDecisionForCurrentLaunch()
+        let migratedArchive = try sessionArchiveStore.loadRecoverableActiveSessionArchive()
+        let migratedArchiveFileURL = testStorageEnvironment.clickyHomePaths.sessionsDirectoryURL
+            .appendingPathComponent("\(legacySessionArchive.sessionID.uuidString).json")
+
+        #expect(migratedArchive == legacySessionArchive)
+        #expect(FileManager.default.fileExists(atPath: migratedArchiveFileURL.path))
+        #expect(FileManager.default.fileExists(atPath: legacyArchiveFileURL.path))
     }
 
     @Test func managerContextWindowUsesLatestConfiguredNumberOfTurns() async throws {
@@ -535,10 +720,11 @@ struct leanring_buddyTests {
             return CompanionManager(
                 settingsStore: settingsStore,
                 sessionArchiveStore: testStorageEnvironment.makeSessionArchiveStore(),
+                promptStore: testStorageEnvironment.makePromptStore(),
                 overlayWindowManager: OverlayWindowManager(),
                 hasScreenRecordingPermission: true,
                 screenCaptureProvider: { screenCapture },
-                streamingResponseAnalyzer: { _, _, _, _, onTextChunk in
+                streamingResponseAnalyzer: { _, _, _, _, _, onTextChunk in
                     await onTextChunk("First streamed sentence")
                     await streamGate.markStarted()
                     await streamGate.waitUntilAllowedToFinish()
@@ -602,10 +788,11 @@ struct leanring_buddyTests {
             return CompanionManager(
                 settingsStore: settingsStore,
                 sessionArchiveStore: testStorageEnvironment.makeSessionArchiveStore(),
+                promptStore: testStorageEnvironment.makePromptStore(),
                 overlayWindowManager: OverlayWindowManager(),
                 hasScreenRecordingPermission: true,
                 screenCaptureProvider: { screenCapture },
-                streamingResponseAnalyzer: { _, _, _, _, onTextChunk in
+                streamingResponseAnalyzer: { _, _, _, _, _, onTextChunk in
                     await onTextChunk("Streaming now")
                     await streamGate.markStarted()
                     await streamGate.waitUntilAllowedToFinish()
@@ -650,10 +837,11 @@ struct leanring_buddyTests {
             return CompanionManager(
                 settingsStore: settingsStore,
                 sessionArchiveStore: testStorageEnvironment.makeSessionArchiveStore(),
+                promptStore: testStorageEnvironment.makePromptStore(),
                 overlayWindowManager: OverlayWindowManager(),
                 hasScreenRecordingPermission: true,
                 screenCaptureProvider: { screenCapture },
-                streamingResponseAnalyzer: { _, _, _, _, _ in
+                streamingResponseAnalyzer: { _, _, _, _, _, _ in
                     struct TestFailure: LocalizedError {
                         var errorDescription: String? { "network unavailable" }
                     }
@@ -687,6 +875,56 @@ struct leanring_buddyTests {
             #expect(companionManager.currentConversationTurn?.phase == .failed)
             #expect(companionManager.isCurrentConversationTurnSelected)
         }
+    }
+
+    @Test func sendPassesResolvedSystemPromptIntoStreamingAnalyzer() async throws {
+        let testStorageEnvironment = TestStorageEnvironment()
+        defer { testStorageEnvironment.cleanup() }
+
+        try FileManager.default.createDirectory(
+            at: testStorageEnvironment.clickyHomePaths.promptsDirectoryURL,
+            withIntermediateDirectories: true
+        )
+        try """
+        external analyzer system prompt
+        """.write(
+            to: testStorageEnvironment.clickyHomePaths.promptsDirectoryURL
+                .appendingPathComponent("text-response-system.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let screenCapture = makeTestScreenCapture()
+        var capturedSystemPrompt: String?
+
+        let companionManager = await MainActor.run {
+            let settingsStore = testStorageEnvironment.makeSettingsStore()
+            configureCompleteSettingsStore(settingsStore)
+
+            return CompanionManager(
+                settingsStore: settingsStore,
+                sessionArchiveStore: testStorageEnvironment.makeSessionArchiveStore(),
+                promptStore: testStorageEnvironment.makePromptStore(),
+                overlayWindowManager: OverlayWindowManager(),
+                hasScreenRecordingPermission: true,
+                screenCaptureProvider: { screenCapture },
+                streamingResponseAnalyzer: { _, systemPrompt, _, _, _, _ in
+                    capturedSystemPrompt = systemPrompt
+                    return "Prompt received [POINT:none]"
+                }
+            )
+        }
+
+        await MainActor.run {
+            companionManager.promptDraft = "Capture the prompt wiring."
+            companionManager.sendCurrentPromptDraft()
+        }
+
+        try await waitUntil {
+            companionManager.completedConversationTurns.count == 1
+        }
+
+        #expect(capturedSystemPrompt == "external analyzer system prompt")
     }
 
 }

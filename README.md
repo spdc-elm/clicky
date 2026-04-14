@@ -58,6 +58,16 @@ The app will appear in your menu bar (not the dock). Click the icon to open the 
 
 Once those are set, use your shortcut to open the centered prompt composer, type a question, and send it. Clicky captures the current cursor screen automatically.
 
+### Optional: prompt overrides and local data
+
+Clicky keeps its local prompt/session data under `~/.clicky/`:
+
+- `~/.clicky/prompts/text-response-system.md`
+- `~/.clicky/prompts/element-location-user.md`
+- `~/.clicky/sessions/`
+
+Clicky exports the bundled default prompts into `~/.clicky/prompts` so you can edit them directly. If a prompt file is missing, empty, unreadable, or invalid, Clicky falls back to the bundled default Markdown prompt and writes that default template back into the prompt folder. Session archives now live in `~/.clicky/sessions`, and Clicky automatically copies legacy archives from `Application Support/Clicky/Sessions` there the first time it needs them.
+
 ### Permissions the app needs
 
 - **Screen Recording** — for taking screenshots when you use the hotkey
@@ -66,7 +76,7 @@ Once those are set, use your shortcut to open the centered prompt composer, type
 
 If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
 
-**Menu bar app** (no dock icon) with two primary `NSPanel` surfaces — one for settings and one centered prompt composer that also hosts live responses — plus a full-screen transparent cursor overlay. Sending a prompt captures the current cursor screen, then streams either an Anthropic Messages response or an OpenAI Chat Completions response inside the composer based on the selected provider, while keeping Clicky's pointing behavior via terminal `[POINT:x,y:label]` tags.
+**Menu bar app** (no dock icon) with two primary `NSPanel` surfaces — one for settings and one centered prompt composer that also hosts live responses — plus a full-screen transparent cursor overlay. Sending a prompt captures the current cursor screen, then streams either an Anthropic Messages response or an OpenAI Chat Completions response inside the composer based on the selected provider, while keeping Clicky's pointing behavior via terminal `[POINT:x,y:label]` tags. Prompt defaults ship as bundled Markdown files, while local overrides and archived sessions live under `~/.clicky/`.
 
 ## Project structure
 
@@ -75,10 +85,13 @@ leanring-buddy/          # Swift source (yes, the typo stays)
   CompanionManager.swift    # Central state machine
   CompanionPanelView.swift  # Settings panel UI
   PromptComposerOverlay.swift # Centered input overlay + inline response/history UI
+  ClickyHomePaths.swift     # ~/.clicky path conventions
+  ClickyPromptStore.swift   # Prompt override loading + bundled fallback
   ClaudeAPI.swift           # Claude streaming client
   OpenAIAPI.swift           # OpenAI streaming client
   OverlayWindow.swift       # Blue cursor overlay
   ClickySettingsStore.swift # Provider-specific endpoint/model/API-key config
+  PromptDefaults/           # Bundled default Markdown prompts
 worker/                  # Optional Cloudflare Worker proxy
   src/index.ts              # Legacy /chat and /tts routes
 CLAUDE.md                # Full architecture doc (agents read this)

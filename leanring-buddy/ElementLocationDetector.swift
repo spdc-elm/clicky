@@ -23,6 +23,7 @@ class ElementLocationDetector {
     private let apiKey: String
     private let apiURL: URL
     private let model: String
+    private let promptStore: ClickyPromptStore
     private let session: URLSession
 
     /// Anthropic-recommended resolutions for Computer Use, paired with their aspect ratios.
@@ -35,10 +36,15 @@ class ElementLocationDetector {
         (1366, 768,  1366.0 / 768.0)   // ~16:9  = 1.779 (external monitors, ultrawide fallback)
     ]
 
-    init(apiKey: String, model: String = "claude-sonnet-4-6") {
+    init(
+        apiKey: String,
+        model: String = "claude-sonnet-4-6",
+        promptStore: ClickyPromptStore = ClickyPromptStore()
+    ) {
         self.apiKey = apiKey
         self.apiURL = URL(string: "https://api.anthropic.com/v1/messages")!
         self.model = model
+        self.promptStore = promptStore
 
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 15
@@ -165,14 +171,14 @@ class ElementLocationDetector {
         // Detect image media type (PNG vs JPEG)
         let mediaType = detectImageMediaType(for: resizedScreenshotData)
         let base64Screenshot = resizedScreenshotData.base64EncodedString()
+        let userPrompt: String
 
-        let userPrompt = """
-        The user asked this question while looking at their screen: "\(userQuestion)"
-
-        Look at the screenshot. If there is a specific UI element (button, link, menu item, text field, icon, etc.) that the user should interact with or is asking about, click on that element.
-
-        If the question is purely conceptual (e.g., "what does HTML mean?") and there's no specific element to point to, just respond with text saying "no specific element".
-        """
+        do {
+            userPrompt = try renderedElementLocationUserPrompt(for: userQuestion)
+        } catch {
+            print("⚠️ ElementLocationDetector: couldn't load the element location prompt: \(error.localizedDescription)")
+            return nil
+        }
 
         let body: [String: Any] = [
             "model": model,
@@ -261,6 +267,13 @@ class ElementLocationDetector {
         // No tool_use block found — Claude responded with text (no element to point at)
         print("🎯 ElementLocationDetector: no specific element detected (conceptual question)")
         return nil
+    }
+
+    func renderedElementLocationUserPrompt(for userQuestion: String) throws -> String {
+        try promptStore.renderedPrompt(
+            for: .elementLocationUser,
+            replacementsByPlaceholderToken: ["{{user_question}}": userQuestion]
+        ).text
     }
 
     /// Resizes screenshot data to the specified Computer Use resolution.
