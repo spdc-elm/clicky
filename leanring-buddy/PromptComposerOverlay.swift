@@ -197,12 +197,18 @@ private struct PromptComposerView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 VStack(alignment: .leading, spacing: 12) {
-                    if let selectedConversationTurnDetail = companionManager.selectedConversationTurnDetail,
-                       let selectedConversationTurnNumber = companionManager.selectedConversationTurnNumber {
+                    if let currentConversationTurn = companionManager.currentConversationTurn,
+                       companionManager.isCurrentConversationTurnSelected {
+                        CurrentConversationTurnDetailCard(
+                            currentConversationTurn: currentConversationTurn,
+                            onClose: companionManager.clearSelectedConversationHistorySelection
+                        )
+                    } else if let selectedConversationTurnDetail = companionManager.selectedArchivedConversationTurnDetail,
+                              let selectedConversationTurnNumber = companionManager.selectedArchivedConversationTurnNumber {
                         ConversationTurnDetailCard(
                             selectedConversationTurnNumber: selectedConversationTurnNumber,
                             selectedConversationTurnDetail: selectedConversationTurnDetail,
-                            onClose: companionManager.clearSelectedConversationTurn
+                            onClose: companionManager.clearSelectedConversationHistorySelection
                         )
                     }
 
@@ -268,19 +274,19 @@ private struct PromptComposerView: View {
 
             if !companionManager.needsSessionRestoreDecision {
                 Button(action: companionManager.sendCurrentPromptDraft) {
-                    Text("Send")
+                    Text(companionManager.interfaceState == .streaming ? "Streaming..." : "Send")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(DS.Colors.textOnAccent)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
                         .background(
                             Capsule()
-                                .fill(companionManager.canSendPromptDraft ? DS.Colors.accent : DS.Colors.accent.opacity(0.4))
+                                .fill(companionManager.canSubmitCurrentPromptDraft ? DS.Colors.accent : DS.Colors.accent.opacity(0.4))
                         )
                 }
                 .buttonStyle(.plain)
                 .pointerCursor()
-                .disabled(!companionManager.canSendPromptDraft)
+                .disabled(!companionManager.canSubmitCurrentPromptDraft)
             }
         }
     }
@@ -296,6 +302,10 @@ private struct PromptComposerView: View {
             Text("Choose whether to resume the previous session before writing a new prompt.")
                 .font(.system(size: 12))
                 .foregroundColor(DS.Colors.textTertiary)
+        } else if companionManager.interfaceState == .processing || companionManager.interfaceState == .streaming {
+            Text("Current reply is still in progress. You can draft the next prompt, but Send stays disabled until this round finishes.")
+                .font(.system(size: 12))
+                .foregroundColor(DS.Colors.textTertiary)
         } else {
             Text("Enter adds a new line. Command+Enter sends.")
                 .font(.system(size: 12))
@@ -307,8 +317,8 @@ private struct PromptComposerView: View {
 private struct ConversationHistorySidebar: View {
     @ObservedObject var companionManager: CompanionManager
 
-    private var previewTurnsIncludedInNextRequest: [ConversationHistoryPreviewTurn] {
-        Array(companionManager.recentConversationHistoryPreviewTurns.reversed())
+    private var conversationHistorySidebarItems: [ConversationHistorySidebarItem] {
+        companionManager.conversationHistorySidebarItems
     }
 
     var body: some View {
@@ -353,22 +363,13 @@ private struct ConversationHistorySidebar: View {
             }
 
             Group {
-                if previewTurnsIncludedInNextRequest.isEmpty {
+                if conversationHistorySidebarItems.isEmpty {
                     emptyHistoryState
                 } else {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 10) {
-                            ForEach(previewTurnsIncludedInNextRequest) { previewTurn in
-                                Button(action: {
-                                    companionManager.selectConversationTurn(turnID: previewTurn.turnID)
-                                }) {
-                                    ConversationHistoryTurnPreviewCard(
-                                        previewTurn: previewTurn,
-                                        isSelected: companionManager.selectedConversationTurnID == previewTurn.turnID
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                                .pointerCursor()
+                            ForEach(conversationHistorySidebarItems) { sidebarItem in
+                                sidebarItemButton(for: sidebarItem)
                             }
                         }
                         .padding(.trailing, 2)
@@ -417,11 +418,19 @@ private struct ConversationHistorySidebar: View {
             return "Choose whether to resume the previous session before loading any session context."
         }
 
-        if previewTurnsIncludedInNextRequest.isEmpty {
+        if companionManager.currentConversationTurn != nil && companionManager.recentConversationHistoryPreviewTurns.isEmpty {
+            return "Current Turn is still temporary and stays out of session context until the round is saved."
+        }
+
+        if companionManager.recentConversationHistoryPreviewTurns.isEmpty {
             return "Your next request will start with a fresh context."
         }
 
         let contextTurnLimit = companionManager.settingsStore.conversationContextTurnLimit
+        if companionManager.currentConversationTurn != nil {
+            return "Current Turn is unsaved. Only the completed turns below count toward Clicky's latest \(contextTurnLimit)-turn context."
+        }
+
         return "These completed turns are the latest \(contextTurnLimit)-turn context Clicky will include with your next request."
     }
 
@@ -439,6 +448,104 @@ private struct ConversationHistorySidebar: View {
         }
 
         return "Drafts and streaming replies stay out of session context until the round finishes."
+    }
+
+    @ViewBuilder
+    private func sidebarItemButton(for sidebarItem: ConversationHistorySidebarItem) -> some View {
+        switch sidebarItem {
+        case .currentTurn(let previewTurn):
+            Button(action: companionManager.selectCurrentConversationTurn) {
+                CurrentConversationHistoryTurnPreviewCard(
+                    previewTurn: previewTurn,
+                    isSelected: companionManager.isCurrentConversationTurnSelected
+                )
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+        case .archivedTurn(let previewTurn):
+            Button(action: {
+                companionManager.selectArchivedConversationTurn(turnID: previewTurn.turnID)
+            }) {
+                ConversationHistoryTurnPreviewCard(
+                    previewTurn: previewTurn,
+                    isSelected: companionManager.selectedConversationHistorySelection == .archivedTurn(previewTurn.turnID)
+                )
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+        }
+    }
+}
+
+private struct CurrentConversationHistoryTurnPreviewCard: View {
+    let previewTurn: CurrentConversationPreviewTurn
+    let isSelected: Bool
+
+    private var statusText: String {
+        switch previewTurn.phase {
+        case .processing:
+            return "Capturing screen"
+        case .streaming:
+            return "Streaming reply"
+        case .completed:
+            return "Unsaved reply"
+        case .failed:
+            return "Reply failed"
+        }
+    }
+
+    private var statusColor: Color {
+        switch previewTurn.phase {
+        case .processing, .streaming:
+            return DS.Colors.accentText
+        case .completed:
+            return DS.Colors.warningText
+        case .failed:
+            return DS.Colors.destructiveText
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Current Turn")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(DS.Colors.textPrimary)
+
+                Spacer()
+
+                Text(statusText)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(statusColor)
+            }
+
+            ConversationHistorySpeakerPreview(
+                speakerLabel: "You",
+                previewText: previewTurn.promptPreviewText,
+                speakerColor: DS.Colors.accentText
+            )
+
+            Divider()
+                .overlay(DS.Colors.borderSubtle.opacity(0.6))
+
+            ConversationHistorySpeakerPreview(
+                speakerLabel: "Clicky",
+                previewText: previewTurn.responsePreviewText,
+                speakerColor: statusColor
+            )
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(isSelected ? DS.Colors.surface3 : DS.Colors.surface1.opacity(0.92))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(
+                            isSelected ? DS.Colors.accent : statusColor.opacity(0.6),
+                            lineWidth: 1
+                        )
+                )
+        )
     }
 }
 
@@ -499,6 +606,94 @@ private struct ConversationHistorySpeakerPreview: View {
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+}
+
+private struct CurrentConversationTurnDetailCard: View {
+    let currentConversationTurn: CurrentConversationTurn
+    let onClose: () -> Void
+
+    private var subtitleText: String {
+        switch currentConversationTurn.phase {
+        case .processing:
+            return "Preparing the screenshot request for this unsaved turn."
+        case .streaming:
+            return "Streaming the latest reply. This turn will join session history only after it finishes."
+        case .completed:
+            return "Reply received, but this turn is still temporary until it can be saved."
+        case .failed:
+            return "This turn failed and was not added to session history."
+        }
+    }
+
+    private var responseSpeakerColor: Color {
+        switch currentConversationTurn.phase {
+        case .failed:
+            return DS.Colors.destructiveText
+        default:
+            return DS.Colors.info
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Current Turn")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(DS.Colors.textPrimary)
+
+                    Text(subtitleText)
+                        .font(.system(size: 11))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+
+                Spacer()
+
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .frame(width: 20, height: 20)
+                        .background(
+                            Circle()
+                                .fill(Color.white.opacity(0.08))
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    ConversationTurnDetailSection(
+                        speakerLabel: "You",
+                        contentText: currentConversationTurn.promptText,
+                        speakerColor: DS.Colors.accentText
+                    )
+
+                    Divider()
+                        .overlay(DS.Colors.borderSubtle.opacity(0.6))
+
+                    ConversationTurnDetailSection(
+                        speakerLabel: "Clicky",
+                        contentText: currentConversationTurn.responseText,
+                        speakerColor: responseSpeakerColor
+                    )
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: 180)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(DS.Colors.surface2)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle.opacity(0.75), lineWidth: 1)
+                )
+        )
     }
 }
 

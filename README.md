@@ -1,5 +1,5 @@
 # Hi, this is Clicky.
-It's an AI buddy that lives next to your cursor. It sees your current screen when you ask a question, streams back a text answer in a floating panel, and can point at UI elements on screen.
+It's an AI buddy that lives next to your cursor. It sees your current screen when you ask a question, streams back a text answer inside the prompt composer, and can point at UI elements on screen.
 
 Download it [here](https://www.clicky.so/) for free.
 
@@ -66,7 +66,7 @@ Once those are set, use your shortcut to open the centered prompt composer, type
 
 If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
 
-**Menu bar app** (no dock icon) with three `NSPanel` surfaces — one for settings, one centered prompt composer, and one floating response panel — plus a full-screen transparent cursor overlay. Sending a prompt captures the current cursor screen, then streams either an Anthropic Messages response or an OpenAI Chat Completions response based on the selected provider, while keeping Clicky's pointing behavior via terminal `[POINT:x,y:label]` tags.
+**Menu bar app** (no dock icon) with two primary `NSPanel` surfaces — one for settings and one centered prompt composer that also hosts live responses — plus a full-screen transparent cursor overlay. Sending a prompt captures the current cursor screen, then streams either an Anthropic Messages response or an OpenAI Chat Completions response inside the composer based on the selected provider, while keeping Clicky's pointing behavior via terminal `[POINT:x,y:label]` tags.
 
 ## Project structure
 
@@ -74,8 +74,7 @@ If you want the full technical breakdown, read `CLAUDE.md`. But here's the short
 leanring-buddy/          # Swift source (yes, the typo stays)
   CompanionManager.swift    # Central state machine
   CompanionPanelView.swift  # Settings panel UI
-  PromptComposerOverlay.swift # Centered input overlay
-  CompanionResponseOverlay.swift # Scrollable response panel
+  PromptComposerOverlay.swift # Centered input overlay + inline response/history UI
   ClaudeAPI.swift           # Claude streaming client
   OpenAIAPI.swift           # OpenAI streaming client
   OverlayWindow.swift       # Blue cursor overlay

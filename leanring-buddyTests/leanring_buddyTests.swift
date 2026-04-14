@@ -5,12 +5,92 @@
 //  Created by thorfinn on 3/2/26.
 //
 
+import AppKit
 import Foundation
 import Testing
 @testable import Clicky
 
 @MainActor
 struct leanring_buddyTests {
+
+    actor StreamGate {
+        private var didStart = false
+        private var startedContinuations: [CheckedContinuation<Void, Never>] = []
+        private var didFinish = false
+        private var finishContinuations: [CheckedContinuation<Void, Never>] = []
+
+        func markStarted() {
+            didStart = true
+            let continuations = startedContinuations
+            startedContinuations.removeAll()
+            continuations.forEach { $0.resume() }
+        }
+
+        func waitUntilStarted() async {
+            if didStart {
+                return
+            }
+
+            await withCheckedContinuation { continuation in
+                startedContinuations.append(continuation)
+            }
+        }
+
+        func allowFinish() {
+            didFinish = true
+            let continuations = finishContinuations
+            finishContinuations.removeAll()
+            continuations.forEach { $0.resume() }
+        }
+
+        func waitUntilAllowedToFinish() async {
+            if didFinish {
+                return
+            }
+
+            await withCheckedContinuation { continuation in
+                finishContinuations.append(continuation)
+            }
+        }
+    }
+
+    private func configureCompleteSettingsStore(_ settingsStore: ClickySettingsStore) {
+        settingsStore.selectedProvider = .openAI
+        settingsStore.endpointURLString = "https://api.openai.com"
+        settingsStore.modelID = "gpt-5.2-2025-12-11"
+        settingsStore.apiKey = "openai-key"
+    }
+
+    private func makeTestScreenCapture() -> CompanionScreenCapture {
+        let availableScreen = NSScreen.main ?? NSScreen.screens.first!
+        return CompanionScreenCapture(
+            imageData: Data([0xFF, 0xD8, 0xFF, 0xD9]),
+            label: "test screen",
+            displayWidthInPoints: Int(availableScreen.frame.width),
+            displayHeightInPoints: Int(availableScreen.frame.height),
+            displayFrame: availableScreen.frame,
+            screenshotWidthInPixels: 800,
+            screenshotHeightInPixels: 600,
+            screen: availableScreen
+        )
+    }
+
+    private func waitUntil(
+        timeoutNanoseconds: UInt64 = 1_000_000_000,
+        condition: @escaping @MainActor () -> Bool
+    ) async throws {
+        let timeoutSeconds = Double(timeoutNanoseconds) / 1_000_000_000
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+
+        while await MainActor.run(body: condition) == false {
+            try await Task.sleep(nanoseconds: 10_000_000)
+            if Date() >= deadline {
+                break
+            }
+        }
+
+        #expect(await MainActor.run(body: condition))
+    }
 
     private struct TestStorageEnvironment {
         let suiteName: String
@@ -439,6 +519,174 @@ struct leanring_buddyTests {
         )
 
         #expect(displayText == "The button is near the bottom toolbar.")
+    }
+
+    @Test func sendKeepsComposerOpenAndShowsTemporaryCurrentTurnOutsideContext() async throws {
+        let testStorageEnvironment = TestStorageEnvironment()
+        defer { testStorageEnvironment.cleanup() }
+
+        let screenCapture = makeTestScreenCapture()
+        let streamGate = StreamGate()
+
+        let companionManager = await MainActor.run {
+            let settingsStore = testStorageEnvironment.makeSettingsStore()
+            configureCompleteSettingsStore(settingsStore)
+
+            return CompanionManager(
+                settingsStore: settingsStore,
+                sessionArchiveStore: testStorageEnvironment.makeSessionArchiveStore(),
+                overlayWindowManager: OverlayWindowManager(),
+                hasScreenRecordingPermission: true,
+                screenCaptureProvider: { screenCapture },
+                streamingResponseAnalyzer: { _, _, _, _, onTextChunk in
+                    await onTextChunk("First streamed sentence")
+                    await streamGate.markStarted()
+                    await streamGate.waitUntilAllowedToFinish()
+                    return "First streamed sentence [POINT:none]"
+                }
+            )
+        }
+
+        await MainActor.run {
+            companionManager.openPromptComposer()
+            companionManager.promptDraft = "Explain the highlighted area."
+            companionManager.sendCurrentPromptDraft()
+
+            #expect(companionManager.isPromptComposerPresented)
+            #expect(companionManager.isCurrentConversationTurnSelected)
+            #expect(companionManager.currentConversationTurn?.promptText == "Explain the highlighted area.")
+            #expect(companionManager.conversationTurnsIncludedInAIContext.isEmpty)
+            #expect(!companionManager.canSubmitCurrentPromptDraft)
+        }
+
+        await streamGate.waitUntilStarted()
+
+        await MainActor.run {
+            #expect(companionManager.interfaceState == .streaming)
+            #expect(companionManager.currentConversationTurn?.phase == .streaming)
+            #expect(companionManager.currentConversationTurn?.responseText == "First streamed sentence")
+            if case .currentTurn(let previewTurn)? = companionManager.conversationHistorySidebarItems.first {
+                #expect(previewTurn.phase == .streaming)
+                #expect(previewTurn.promptPreviewText.contains("Explain the highlighted area"))
+                #expect(previewTurn.responsePreviewText.contains("First streamed sentence"))
+            } else {
+                Issue.record("Expected the temporary current turn to be first in the sidebar.")
+            }
+        }
+
+        await streamGate.allowFinish()
+        try await waitUntil {
+            companionManager.interfaceState == .composing && companionManager.currentConversationTurn == nil
+        }
+
+        await MainActor.run {
+            #expect(companionManager.isPromptComposerPresented)
+            #expect(companionManager.completedConversationTurns.count == 1)
+            #expect(companionManager.completedConversationTurns.first?.assistantResponseText == "First streamed sentence")
+            let completedTurnID = companionManager.completedConversationTurns.first?.turnID
+            #expect(companionManager.selectedConversationHistorySelection == completedTurnID.map(ConversationHistorySelection.archivedTurn))
+        }
+    }
+
+    @Test func streamingTurnAllowsDraftingButBlocksSecondSendUntilCompletion() async throws {
+        let testStorageEnvironment = TestStorageEnvironment()
+        defer { testStorageEnvironment.cleanup() }
+
+        let screenCapture = makeTestScreenCapture()
+        let streamGate = StreamGate()
+
+        let companionManager = await MainActor.run {
+            let settingsStore = testStorageEnvironment.makeSettingsStore()
+            configureCompleteSettingsStore(settingsStore)
+
+            return CompanionManager(
+                settingsStore: settingsStore,
+                sessionArchiveStore: testStorageEnvironment.makeSessionArchiveStore(),
+                overlayWindowManager: OverlayWindowManager(),
+                hasScreenRecordingPermission: true,
+                screenCaptureProvider: { screenCapture },
+                streamingResponseAnalyzer: { _, _, _, _, onTextChunk in
+                    await onTextChunk("Streaming now")
+                    await streamGate.markStarted()
+                    await streamGate.waitUntilAllowedToFinish()
+                    return "Streaming now [POINT:none]"
+                }
+            )
+        }
+
+        await MainActor.run {
+            companionManager.promptDraft = "First prompt"
+            companionManager.sendCurrentPromptDraft()
+        }
+
+        await streamGate.waitUntilStarted()
+
+        await MainActor.run {
+            companionManager.promptDraft = "Second draft"
+            #expect(companionManager.canSendPromptDraft)
+            #expect(!companionManager.canSubmitCurrentPromptDraft)
+            companionManager.sendCurrentPromptDraft()
+            #expect(companionManager.currentConversationTurn?.promptText == "First prompt")
+            #expect(companionManager.promptDraft == "Second draft")
+            #expect(companionManager.composerValidationMessage == "Wait for the current reply to finish before sending again.")
+        }
+
+        await streamGate.allowFinish()
+        try await waitUntil {
+            companionManager.interfaceState == .idle || companionManager.interfaceState == .composing
+        }
+    }
+
+    @Test func failedTurnStaysTemporaryAndSurvivesComposerReopen() async throws {
+        let testStorageEnvironment = TestStorageEnvironment()
+        defer { testStorageEnvironment.cleanup() }
+
+        let screenCapture = makeTestScreenCapture()
+
+        let companionManager = await MainActor.run {
+            let settingsStore = testStorageEnvironment.makeSettingsStore()
+            configureCompleteSettingsStore(settingsStore)
+
+            return CompanionManager(
+                settingsStore: settingsStore,
+                sessionArchiveStore: testStorageEnvironment.makeSessionArchiveStore(),
+                overlayWindowManager: OverlayWindowManager(),
+                hasScreenRecordingPermission: true,
+                screenCaptureProvider: { screenCapture },
+                streamingResponseAnalyzer: { _, _, _, _, _ in
+                    struct TestFailure: LocalizedError {
+                        var errorDescription: String? { "network unavailable" }
+                    }
+
+                    throw TestFailure()
+                }
+            )
+        }
+
+        await MainActor.run {
+            companionManager.openPromptComposer()
+            companionManager.promptDraft = "Why did this fail?"
+            companionManager.sendCurrentPromptDraft()
+        }
+
+        try await waitUntil {
+            companionManager.currentConversationTurn?.phase == .failed
+        }
+
+        await MainActor.run {
+            #expect(companionManager.completedConversationTurns.isEmpty)
+            #expect(companionManager.currentConversationTurn?.promptText == "Why did this fail?")
+            #expect(companionManager.currentConversationTurn?.phase == .failed)
+            #expect(companionManager.isPromptComposerPresented)
+
+            companionManager.dismissPromptComposer()
+            #expect(!companionManager.isPromptComposerPresented)
+
+            companionManager.openPromptComposer()
+            #expect(companionManager.isPromptComposerPresented)
+            #expect(companionManager.currentConversationTurn?.phase == .failed)
+            #expect(companionManager.isCurrentConversationTurnSelected)
+        }
     }
 
 }
