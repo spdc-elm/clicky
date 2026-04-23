@@ -822,11 +822,17 @@ struct IBeamCursorView: NSViewRepresentable {
 /// Uses AppKit's `NSView.toolTip` to show a tooltip on hover.
 /// SwiftUI's `.help()` conflicts with `.onHover` tracking areas, so
 /// this bridges directly to AppKit's tooltip system which works independently.
+private final class NativeTooltipNSView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+}
+
 private struct NativeTooltipView: NSViewRepresentable {
     let tooltip: String
 
     func makeNSView(context: Context) -> NSView {
-        let view = NSView()
+        let view = NativeTooltipNSView()
         view.toolTip = tooltip
         return view
     }

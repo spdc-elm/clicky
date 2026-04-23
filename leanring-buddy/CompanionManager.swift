@@ -101,11 +101,16 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var needsSessionRestoreDecision = false
     @Published var settingsPanelFeedbackMessage: String?
     @Published var settingsPanelFeedbackIsError = false
+    @Published private(set) var frozenScreenCapture: CompanionScreenCapture?
+    @Published private(set) var frozenScreenAnnotations: [FrozenScreenAnnotation] = []
+    @Published private(set) var selectedFrozenScreenAnnotationTool: FrozenScreenAnnotationTool = .pen
+    @Published private(set) var isFrozenScreenAnnotationEditorPresented = false
 
     let settingsStore: ClickySettingsStore
     let overlayWindowManager: OverlayWindowManager
 
     private lazy var promptComposerPanelManager = PromptComposerPanelManager(companionManager: self)
+    private lazy var frozenScreenAnnotationPanelManager = FrozenScreenAnnotationPanelManager(companionManager: self)
 
     private let sessionArchiveStore: SessionArchiveStore
     private let promptStore: ClickyPromptStore
@@ -113,6 +118,7 @@ final class CompanionManager: ObservableObject {
     private let streamingResponseAnalyzer: StreamingResponseAnalyzer
     private var recoverableSessionArchive: ClickySessionArchive?
     private var currentResponseTask: Task<Void, Never>?
+    private var promptComposerPreparationTask: Task<Void, Never>?
     private var activeRequestIdentifier: UUID?
     private var registeredShortcutHandler = false
     private var cancellables = Set<AnyCancellable>()
@@ -169,7 +175,11 @@ final class CompanionManager: ObservableObject {
     }
 
     var canSubmitCurrentPromptDraft: Bool {
-        canSendPromptDraft && currentResponseTask == nil
+        canSendPromptDraft && currentResponseTask == nil && hasFrozenScreenCapture
+    }
+
+    var hasFrozenScreenCapture: Bool {
+        frozenScreenCapture.map { _ in true } == true
     }
 
     var completedConversationTurns: [ClickyConversationTurnRecord] {
@@ -348,13 +358,49 @@ final class CompanionManager: ObservableObject {
             }
         }
 
+        let promptComposerScreen = NSScreen.screenContainingPoint(NSEvent.mouseLocation)
+        guard hasScreenRecordingPermission else {
+            composerValidationMessage = "Grant Screen Recording so Clicky can freeze your current screen."
+            presentPromptComposer(on: promptComposerScreen)
+            return
+        }
+
+        promptComposerPreparationTask?.cancel()
+        promptComposerPreparationTask = Task { @MainActor in
+            do {
+                let screenCapture = try await screenCaptureProvider()
+                guard !Task.isCancelled else { return }
+
+                frozenScreenCapture = screenCapture
+                frozenScreenAnnotations = []
+                selectedFrozenScreenAnnotationTool = .pen
+                isFrozenScreenAnnotationEditorPresented = false
+                presentPromptComposer(on: screenCapture.screen)
+            } catch {
+                guard !Task.isCancelled else { return }
+
+                frozenScreenCapture = nil
+                frozenScreenAnnotations = []
+                isFrozenScreenAnnotationEditorPresented = false
+                frozenScreenAnnotationPanelManager.hide()
+                composerValidationMessage = "Clicky couldn't freeze the current screen.\n\n\(error.localizedDescription)"
+                presentPromptComposer(on: promptComposerScreen)
+            }
+        }
+    }
+
+    private func presentPromptComposer(on screen: NSScreen?) {
         interfaceState = .composing
         isPromptComposerPresented = true
-        promptComposerPanelManager.show(on: NSScreen.screenContainingPoint(NSEvent.mouseLocation))
+        promptComposerPanelManager.show(on: screen)
     }
 
     func dismissPromptComposer() {
+        promptComposerPreparationTask?.cancel()
+        promptComposerPreparationTask = nil
         promptComposerPanelManager.hide()
+        hideFrozenScreenAnnotationEditor()
+        clearFrozenScreenCaptureAndAnnotations()
         isPromptComposerPresented = false
 
         if currentResponseTask == nil {
@@ -384,10 +430,12 @@ final class CompanionManager: ObservableObject {
             return
         }
 
-        guard hasScreenRecordingPermission else {
-            _ = WindowPositionManager.requestScreenRecordingPermission()
-            refreshPermissions()
-            composerValidationMessage = "Grant Screen Recording, then try again. macOS may require reopening Clicky."
+        guard hasFrozenScreenCapture else {
+            if !hasScreenRecordingPermission {
+                _ = WindowPositionManager.requestScreenRecordingPermission()
+                refreshPermissions()
+            }
+            composerValidationMessage = "Open Clicky with Screen Recording enabled so it can freeze your current screen."
             return
         }
 
@@ -401,11 +449,12 @@ final class CompanionManager: ObservableObject {
         composerValidationMessage = nil
         promptDraft = ""
         selectedConversationHistorySelection = .currentTurn
-        sendPromptWithScreenshot(prompt: trimmedPromptDraft)
+        hideFrozenScreenAnnotationEditor()
+        sendPromptWithFrozenScreenshot(prompt: trimmedPromptDraft)
     }
 
     func startNewSession() {
-        cancelActiveRequestAndResetTransientUI()
+        cancelActiveRequestAndResetTransientUI(clearFrozenScreenCapture: false)
 
         do {
             activeSessionArchive = try sessionArchiveStore.createNewConversationSession()
@@ -422,6 +471,40 @@ final class CompanionManager: ObservableObject {
         if isPromptComposerPresented, !needsSessionRestoreDecision {
             requestPromptEditorFocus()
         }
+    }
+
+    func setSelectedFrozenScreenAnnotationTool(_ tool: FrozenScreenAnnotationTool) {
+        selectedFrozenScreenAnnotationTool = tool
+    }
+
+    func showFrozenScreenAnnotationEditor() {
+        guard let frozenScreenCapture else {
+            composerValidationMessage = "Open Clicky with Screen Recording enabled so it can freeze your current screen."
+            return
+        }
+
+        frozenScreenAnnotationPanelManager.show(screenCapture: frozenScreenCapture)
+        isFrozenScreenAnnotationEditorPresented = true
+        promptComposerPanelManager.bringToFront()
+    }
+
+    func hideFrozenScreenAnnotationEditor() {
+        frozenScreenAnnotationPanelManager.hide()
+        isFrozenScreenAnnotationEditorPresented = false
+        promptComposerPanelManager.bringToFront()
+    }
+
+    func appendFrozenScreenAnnotation(_ annotation: FrozenScreenAnnotation) {
+        frozenScreenAnnotations.append(annotation)
+    }
+
+    func undoFrozenScreenAnnotation() {
+        guard !frozenScreenAnnotations.isEmpty else { return }
+        frozenScreenAnnotations.removeLast()
+    }
+
+    func clearFrozenScreenAnnotations() {
+        frozenScreenAnnotations = []
     }
 
     func openSessionArchivesFolder() {
@@ -461,7 +544,7 @@ final class CompanionManager: ObservableObject {
     }
 
     func clearAllSessionArchives() {
-        cancelActiveRequestAndResetTransientUI()
+        cancelActiveRequestAndResetTransientUI(clearFrozenScreenCapture: true)
 
         do {
             try sessionArchiveStore.clearAllSessionArchives()
@@ -562,7 +645,9 @@ final class CompanionManager: ObservableObject {
         activeSessionArchive = try sessionArchiveStore.createNewConversationSession()
     }
 
-    private func cancelActiveRequestAndResetTransientUI() {
+    private func cancelActiveRequestAndResetTransientUI(clearFrozenScreenCapture: Bool) {
+        promptComposerPreparationTask?.cancel()
+        promptComposerPreparationTask = nil
         currentResponseTask?.cancel()
         currentResponseTask = nil
         activeRequestIdentifier = nil
@@ -571,7 +656,18 @@ final class CompanionManager: ObservableObject {
         currentConversationTurn = nil
         selectedConversationHistorySelection = nil
 
+        if clearFrozenScreenCapture {
+            hideFrozenScreenAnnotationEditor()
+            clearFrozenScreenCaptureAndAnnotations()
+        }
         clearDetectedElementLocation()
+    }
+
+    private func clearFrozenScreenCaptureAndAnnotations() {
+        frozenScreenCapture = nil
+        frozenScreenAnnotations = []
+        selectedFrozenScreenAnnotationTool = .pen
+        isFrozenScreenAnnotationEditorPresented = false
     }
 
     private func ensureSelectedConversationSelectionStillVisible() {
@@ -696,7 +792,7 @@ final class CompanionManager: ObservableObject {
         )
     }
 
-    private func sendPromptWithScreenshot(prompt: String) {
+    private func sendPromptWithFrozenScreenshot(prompt: String) {
         currentResponseTask?.cancel()
         clearDetectedElementLocation()
         updateCurrentConversationTurnResponse(
@@ -731,7 +827,7 @@ final class CompanionManager: ObservableObject {
 
             do {
                 let resolvedSystemPrompt = try promptStore.resolvedPrompt(for: .textResponseSystem)
-                let screenCapture = try await screenCaptureProvider()
+                let screenCapture = try renderFrozenScreenCaptureForCurrentRequest()
                 guard !Task.isCancelled else { return }
 
                 updateCurrentConversationTurnResponse(
@@ -818,6 +914,21 @@ final class CompanionManager: ObservableObject {
                 }
             }
         }
+    }
+
+    private func renderFrozenScreenCaptureForCurrentRequest() throws -> CompanionScreenCapture {
+        guard let frozenScreenCapture else {
+            throw NSError(
+                domain: "CompanionManager",
+                code: -3,
+                userInfo: [NSLocalizedDescriptionKey: "Missing frozen screen capture."]
+            )
+        }
+
+        return try FrozenScreenAnnotationRenderer.renderAnnotatedScreenCapture(
+            frozenScreenCapture,
+            annotations: frozenScreenAnnotations
+        )
     }
 
     static func defaultStreamingResponseAnalyzer(

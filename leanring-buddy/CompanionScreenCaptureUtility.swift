@@ -56,15 +56,8 @@ enum CompanionScreenCaptureUtility {
 
         let filter = SCContentFilter(display: targetDisplay, excludingWindows: ownAppWindows)
         let configuration = SCStreamConfiguration()
-        let maxDimension = 1440
-        let aspectRatio = CGFloat(targetDisplay.width) / CGFloat(targetDisplay.height)
-        if targetDisplay.width >= targetDisplay.height {
-            configuration.width = maxDimension
-            configuration.height = Int(CGFloat(maxDimension) / aspectRatio)
-        } else {
-            configuration.height = maxDimension
-            configuration.width = Int(CGFloat(maxDimension) * aspectRatio)
-        }
+        configuration.width = targetDisplay.width
+        configuration.height = targetDisplay.height
 
         let capturedImage = try await SCScreenshotManager.captureImage(
             contentFilter: filter,
@@ -73,7 +66,7 @@ enum CompanionScreenCaptureUtility {
 
         guard let jpegData = NSBitmapImageRep(cgImage: capturedImage).representation(
             using: .jpeg,
-            properties: [.compressionFactor: 0.82]
+            properties: [.compressionFactor: 0.94]
         ) else {
             throw NSError(
                 domain: "CompanionScreenCapture",

@@ -61,10 +61,40 @@ struct leanring_buddyTests {
         settingsStore.apiKey = "openai-key"
     }
 
+    private func makeTestJPEGData(width: Int = 800, height: Int = 600) -> Data {
+        let bitmapRepresentation = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: width,
+            pixelsHigh: height,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        )
+
+        guard let bitmapRepresentation else {
+            return Data([0xFF, 0xD8, 0xFF, 0xD9])
+        }
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmapRepresentation)
+        NSColor.white.setFill()
+        NSBezierPath(rect: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height))).fill()
+        NSGraphicsContext.restoreGraphicsState()
+
+        return bitmapRepresentation.representation(
+            using: .jpeg,
+            properties: [.compressionFactor: 0.9]
+        ) ?? Data([0xFF, 0xD8, 0xFF, 0xD9])
+    }
+
     private func makeTestScreenCapture() -> CompanionScreenCapture {
         let availableScreen = NSScreen.main ?? NSScreen.screens.first!
         return CompanionScreenCapture(
-            imageData: Data([0xFF, 0xD8, 0xFF, 0xD9]),
+            imageData: makeTestJPEGData(),
             label: "test screen",
             displayWidthInPoints: Int(availableScreen.frame.width),
             displayHeightInPoints: Int(availableScreen.frame.height),
@@ -90,6 +120,16 @@ struct leanring_buddyTests {
         }
 
         #expect(await MainActor.run(body: condition))
+    }
+
+    private func openPromptComposerAndWaitForFrozenCapture(_ companionManager: CompanionManager) async throws {
+        await MainActor.run {
+            companionManager.openPromptComposer()
+        }
+
+        try await waitUntil {
+            companionManager.frozenScreenCapture.map { _ in true } == true
+        }
     }
 
     private struct TestStorageEnvironment {
@@ -706,6 +746,152 @@ struct leanring_buddyTests {
         #expect(displayText == "The button is near the bottom toolbar.")
     }
 
+    @Test func openingComposerCapturesFrozenScreenOnceAndSendReusesIt() async throws {
+        let testStorageEnvironment = TestStorageEnvironment()
+        defer { testStorageEnvironment.cleanup() }
+
+        let screenCapture = makeTestScreenCapture()
+        var captureRequestCount = 0
+        var sentImages: [(data: Data, label: String)] = []
+
+        let companionManager = await MainActor.run {
+            let settingsStore = testStorageEnvironment.makeSettingsStore()
+            configureCompleteSettingsStore(settingsStore)
+
+            return CompanionManager(
+                settingsStore: settingsStore,
+                sessionArchiveStore: testStorageEnvironment.makeSessionArchiveStore(),
+                promptStore: testStorageEnvironment.makePromptStore(),
+                overlayWindowManager: OverlayWindowManager(),
+                hasScreenRecordingPermission: true,
+                screenCaptureProvider: {
+                    captureRequestCount += 1
+                    return screenCapture
+                },
+                streamingResponseAnalyzer: { _, _, images, _, _, _ in
+                    sentImages = images
+                    return "Frozen capture reused [POINT:none]"
+                }
+            )
+        }
+
+        try await openPromptComposerAndWaitForFrozenCapture(companionManager)
+
+        await MainActor.run {
+            #expect(captureRequestCount == 1)
+            #expect(!companionManager.isFrozenScreenAnnotationEditorPresented)
+            companionManager.showFrozenScreenAnnotationEditor()
+            #expect(companionManager.isFrozenScreenAnnotationEditorPresented)
+            companionManager.hideFrozenScreenAnnotationEditor()
+            #expect(!companionManager.isFrozenScreenAnnotationEditorPresented)
+            companionManager.promptDraft = "Use the frozen screen."
+            companionManager.sendCurrentPromptDraft()
+        }
+
+        try await waitUntil {
+            companionManager.completedConversationTurns.count == 1
+        }
+
+        await MainActor.run {
+            #expect(captureRequestCount == 1)
+            #expect(sentImages.count == 1)
+            #expect(sentImages.first?.data == screenCapture.imageData)
+            #expect(companionManager.hasFrozenScreenCapture)
+        }
+    }
+
+    @Test func sendWithoutFrozenScreenCaptureShowsValidationAndDoesNotStream() async throws {
+        let testStorageEnvironment = TestStorageEnvironment()
+        defer { testStorageEnvironment.cleanup() }
+
+        var didStartStreaming = false
+
+        let companionManager = await MainActor.run {
+            let settingsStore = testStorageEnvironment.makeSettingsStore()
+            configureCompleteSettingsStore(settingsStore)
+
+            return CompanionManager(
+                settingsStore: settingsStore,
+                sessionArchiveStore: testStorageEnvironment.makeSessionArchiveStore(),
+                promptStore: testStorageEnvironment.makePromptStore(),
+                overlayWindowManager: OverlayWindowManager(),
+                hasScreenRecordingPermission: true,
+                screenCaptureProvider: { makeTestScreenCapture() },
+                streamingResponseAnalyzer: { _, _, _, _, _, _ in
+                    didStartStreaming = true
+                    return "Should not run [POINT:none]"
+                }
+            )
+        }
+
+        await MainActor.run {
+            companionManager.promptDraft = "This should not send."
+            companionManager.sendCurrentPromptDraft()
+
+            #expect(!didStartStreaming)
+            #expect(companionManager.completedConversationTurns.isEmpty)
+            #expect(companionManager.composerValidationMessage == "Open Clicky with Screen Recording enabled so it can freeze your current screen.")
+        }
+    }
+
+    @Test func annotatedFrozenScreenCapturePreservesImageDimensionsWhenSent() async throws {
+        let testStorageEnvironment = TestStorageEnvironment()
+        defer { testStorageEnvironment.cleanup() }
+
+        let screenCapture = makeTestScreenCapture()
+        var sentImageData: Data?
+        var sentImageLabel: String?
+
+        let companionManager = await MainActor.run {
+            let settingsStore = testStorageEnvironment.makeSettingsStore()
+            configureCompleteSettingsStore(settingsStore)
+
+            return CompanionManager(
+                settingsStore: settingsStore,
+                sessionArchiveStore: testStorageEnvironment.makeSessionArchiveStore(),
+                promptStore: testStorageEnvironment.makePromptStore(),
+                overlayWindowManager: OverlayWindowManager(),
+                hasScreenRecordingPermission: true,
+                screenCaptureProvider: { screenCapture },
+                streamingResponseAnalyzer: { _, _, images, _, _, _ in
+                    sentImageData = images.first?.data
+                    sentImageLabel = images.first?.label
+                    return "Annotated capture sent [POINT:none]"
+                }
+            )
+        }
+
+        try await openPromptComposerAndWaitForFrozenCapture(companionManager)
+
+        await MainActor.run {
+            companionManager.appendFrozenScreenAnnotation(
+                FrozenScreenAnnotation(
+                    tool: .rectangle,
+                    points: [
+                        CGPoint(x: 100, y: 100),
+                        CGPoint(x: 300, y: 260)
+                    ]
+                )
+            )
+            companionManager.promptDraft = "What did I mark?"
+            companionManager.sendCurrentPromptDraft()
+        }
+
+        try await waitUntil {
+            companionManager.completedConversationTurns.count == 1
+        }
+
+        guard let sentImageData,
+              let sentBitmapRepresentation = NSBitmapImageRep(data: sentImageData) else {
+            Issue.record("Expected an annotated screenshot image.")
+            return
+        }
+
+        #expect(sentBitmapRepresentation.pixelsWide == screenCapture.screenshotWidthInPixels)
+        #expect(sentBitmapRepresentation.pixelsHigh == screenCapture.screenshotHeightInPixels)
+        #expect(sentImageLabel?.contains("with annotations") == true)
+    }
+
     @Test func sendKeepsComposerOpenAndShowsTemporaryCurrentTurnOutsideContext() async throws {
         let testStorageEnvironment = TestStorageEnvironment()
         defer { testStorageEnvironment.cleanup() }
@@ -733,8 +919,9 @@ struct leanring_buddyTests {
             )
         }
 
+        try await openPromptComposerAndWaitForFrozenCapture(companionManager)
+
         await MainActor.run {
-            companionManager.openPromptComposer()
             companionManager.promptDraft = "Explain the highlighted area."
             companionManager.sendCurrentPromptDraft()
 
@@ -801,6 +988,8 @@ struct leanring_buddyTests {
             )
         }
 
+        try await openPromptComposerAndWaitForFrozenCapture(companionManager)
+
         await MainActor.run {
             companionManager.promptDraft = "First prompt"
             companionManager.sendCurrentPromptDraft()
@@ -851,8 +1040,9 @@ struct leanring_buddyTests {
             )
         }
 
+        try await openPromptComposerAndWaitForFrozenCapture(companionManager)
+
         await MainActor.run {
-            companionManager.openPromptComposer()
             companionManager.promptDraft = "Why did this fail?"
             companionManager.sendCurrentPromptDraft()
         }
@@ -870,7 +1060,11 @@ struct leanring_buddyTests {
             companionManager.dismissPromptComposer()
             #expect(!companionManager.isPromptComposerPresented)
 
-            companionManager.openPromptComposer()
+        }
+
+        try await openPromptComposerAndWaitForFrozenCapture(companionManager)
+
+        await MainActor.run {
             #expect(companionManager.isPromptComposerPresented)
             #expect(companionManager.currentConversationTurn?.phase == .failed)
             #expect(companionManager.isCurrentConversationTurnSelected)
@@ -914,6 +1108,8 @@ struct leanring_buddyTests {
                 }
             )
         }
+
+        try await openPromptComposerAndWaitForFrozenCapture(companionManager)
 
         await MainActor.run {
             companionManager.promptDraft = "Capture the prompt wiring."

@@ -5,7 +5,7 @@
 
 ## Overview
 
-macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a compact settings panel. A user-configured global shortcut opens a centered prompt composer with a session context preview, persistent session restore flow, archived conversation history, and inline live-response viewing; sending captures the current cursor screen, streams either an Anthropic Messages response or an OpenAI Chat Completions response inside that composer, and keeps the blue cursor buddy available for on-screen pointing.
+macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a compact settings panel. A user-configured global shortcut freezes the current cursor screen and opens a centered prompt composer with a session context preview, persistent session restore flow, archived conversation history, inline live-response viewing, and an on-demand full-screen annotation layer; sending flattens any annotations into that frozen screenshot, streams either an Anthropic Messages response or an OpenAI Chat Completions response inside the composer, and keeps the blue cursor buddy available for on-screen pointing.
 
 API credentials are stored locally in Keychain. The app can talk directly to either an Anthropic-compatible endpoint or an OpenAI-compatible endpoint, selected at runtime in the settings panel. The Cloudflare Worker remains in the repo as an optional Anthropic proxy, not a runtime requirement.
 
@@ -16,8 +16,8 @@ API credentials are stored locally in Keychain. The app can talk directly to eit
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
 - **AI Chat**: Provider-selectable Anthropic Messages API or OpenAI Chat Completions API, both with streaming text responses and configurable endpoint/model/API key
 - **Shortcut Handling**: Global shortcut registration and recording via `KeyboardShortcuts`
-- **Screen Capture**: ScreenCaptureKit (macOS 14.2+), current cursor screen only
-- **Input UX**: Centered prompt composer overlay with a session context sidebar, restorable session chooser, history detail panel, inline current-turn detail, and multiline text input
+- **Screen Capture**: ScreenCaptureKit (macOS 14.2+), current cursor screen only, captured when the composer opens and reused when sending
+- **Input UX**: Centered prompt composer overlay with a session context sidebar, restorable session chooser, history detail panel, inline current-turn detail, multiline text input, and an on-demand full-screen frozen screenshot annotation layer with pen/rectangle/ellipse tools
 - **Response UX**: Live responses stay inside the composer as a temporary current turn until the round completes and gets archived
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
@@ -42,7 +42,9 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 
 **Cursor Overlay**: A full-screen transparent `NSPanel` hosts the blue cursor companion. It's non-activating, joins all Spaces, and never steals focus. The cursor follows the mouse, shows a spinner while Clicky is processing, and animates to pointed elements returned by the model.
 
-**Composer-First Workflow**: The primary action is opening a centered prompt composer, optionally choosing whether to resume the previous archived session, reviewing the recent completed turns that will be sent as context, writing a question, and sending it with an automatic screenshot of the current cursor screen. The composer stays open while the current turn streams so the user can inspect the reply inline and draft the next prompt without leaving the same surface.
+**Composer-First Workflow**: The primary action is opening a centered prompt composer, freezing the current cursor screen, optionally choosing whether to resume the previous archived session, reviewing the recent completed turns that will be sent as context, writing a question, and sending it with the frozen screenshot. The composer stays open while the current turn streams so the user can inspect the reply inline and draft the next prompt without leaving the same surface.
+
+**Frozen Annotation Layer**: A full-screen non-activating `NSPanel` can be opened from the composer to display the captured cursor screen under the composer. It accepts lightweight pen, rectangle, and ellipse annotations, can be hidden from its toolbar, and flattens those marks into the screenshot JPEG immediately before a prompt is sent.
 
 **Session Archive Split**: Clicky now separates the persistent session archive from the transient AI context window. Full completed turns are saved as JSON session events, while only the most recent configured turns are shown in the composer sidebar and sent back to the model.
 
@@ -55,8 +57,9 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~50 | Menu bar app entry point. Creates `CompanionManager`, launches the cursor overlay, and auto-opens the settings panel when configuration is incomplete. |
-| `CompanionManager.swift` | ~950 | Central text-first state machine. Owns prompt composer flow, session restore/new-session behavior, temporary current-turn state, JSON-backed archive integration, screenshot capture, provider-based response streaming, context-window derivation, and pointing state. |
+| `CompanionManager.swift` | ~1050 | Central text-first state machine. Owns prompt composer flow, frozen screenshot state, session restore/new-session behavior, temporary current-turn state, JSON-backed archive integration, provider-based response streaming, context-window derivation, and pointing state. |
 | `PromptComposerOverlay.swift` | ~970 | Centered prompt composer overlay built with a key-capable `NSPanel`, a clickable session history sidebar, inline current-turn/detail cards, a restore chooser, and a custom multiline `NSTextView` bridge. |
+| `FrozenScreenAnnotationOverlay.swift` | ~482 | Full-screen frozen screenshot annotation layer. Displays the captured screen, handles pen/rectangle/ellipse annotations, and renders annotations into the screenshot sent with a prompt. |
 | `MenuBarPanelManager.swift` | ~236 | NSStatusItem + custom NSPanel lifecycle for the settings dropdown. |
 | `CompanionPanelView.swift` | ~404 | SwiftUI settings panel. Edits provider-specific endpoint URL, API key, model ID, context turn count, the global shortcut, and actions for prompt overrides and session archives, and surfaces Screen Recording status. |
 | `SessionArchiveStore.swift` | ~333 | JSON-backed session persistence layer. Stores active session metadata in `UserDefaults`, writes full completed conversation turns under `~/.clicky/sessions`, and migrates legacy Application Support archives on first use. |

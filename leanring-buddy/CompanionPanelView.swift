@@ -292,7 +292,7 @@ struct CompanionPanelView: View {
                 helperCopy("Record a shortcut so you can open the prompt composer from anywhere.")
             } else {
                 helperCopy(
-                    "Clicky will use your selected \(settingsStore.selectedProvider.displayName) configuration and capture your current cursor screen only when you send a prompt."
+                    "Clicky will use your selected \(settingsStore.selectedProvider.displayName) configuration and freeze your current cursor screen when the shortcut opens the prompt composer."
                 )
             }
         }
@@ -304,7 +304,7 @@ struct CompanionPanelView: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(DS.Colors.warningText)
 
-            Text("Grant Screen Recording so Clicky can attach your current screen when you send a prompt.")
+            Text("Grant Screen Recording so Clicky can freeze and attach your current screen when the shortcut opens the prompt composer.")
                 .font(.system(size: 11))
                 .foregroundColor(DS.Colors.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)

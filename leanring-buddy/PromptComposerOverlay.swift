@@ -44,6 +44,13 @@ final class PromptComposerPanelManager: NSObject, NSWindowDelegate {
         companionManager.requestPromptEditorFocus()
     }
 
+    func bringToFront() {
+        guard let panel, panel.isVisible else { return }
+        panel.makeKeyAndOrderFront(nil)
+        panel.orderFrontRegardless()
+        companionManager.requestPromptEditorFocus()
+    }
+
     func hide() {
         panel?.orderOut(nil)
         removeClickOutsideMonitor()
@@ -107,6 +114,7 @@ final class PromptComposerPanelManager: NSObject, NSWindowDelegate {
             guard let self, let panel = self.panel, panel.isVisible else { return }
             let clickLocation = NSEvent.mouseLocation
             guard !panel.frame.contains(clickLocation) else { return }
+            guard !self.companionManager.hasFrozenScreenCapture else { return }
             self.companionManager.dismissPromptComposer()
         }
     }
@@ -164,7 +172,7 @@ private struct PromptComposerView: View {
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(DS.Colors.textPrimary)
 
-                Text("Type a prompt. Clicky will capture your current screen when you send.")
+                Text("Type a prompt. Clicky froze your current screen when this opened.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
             }
@@ -174,6 +182,14 @@ private struct PromptComposerView: View {
             Text("Drag to move or resize")
                 .font(.system(size: 11))
                 .foregroundColor(DS.Colors.textTertiary)
+
+            Button(action: companionManager.showFrozenScreenAnnotationEditor) {
+                Image(systemName: "square.and.pencil")
+            }
+            .dsIconButtonStyle(size: 24)
+            .nativeTooltip("Edit screenshot")
+            .pointerCursor(isEnabled: companionManager.hasFrozenScreenCapture)
+            .disabled(!companionManager.hasFrozenScreenCapture)
 
             Button(action: companionManager.dismissPromptComposer) {
                 Image(systemName: "xmark")
