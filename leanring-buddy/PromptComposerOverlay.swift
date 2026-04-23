@@ -709,12 +709,54 @@ private final class ComposerSplitHandleNSView: NSView {
     var onDragChanged: ((CGSize) -> Void)?
     var onDragEnded: (() -> Void)?
     private var dragStartLocationInWindow: CGPoint?
+    private var cursorTrackingArea: NSTrackingArea?
 
     override var acceptsFirstResponder: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+
+        if let cursorTrackingArea {
+            removeTrackingArea(cursorTrackingArea)
+        }
+
+        let trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved, .cursorUpdate],
+            owner: self
+        )
+        addTrackingArea(trackingArea)
+        cursorTrackingArea = trackingArea
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(point) ? self : nil
+    }
 
     override func resetCursorRects() {
         super.resetCursorRects()
         addCursorRect(bounds, cursor: axis.cursor)
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        axis.cursor.set()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        axis.cursor.set()
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        axis.cursor.set()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        NSCursor.arrow.set()
     }
 
     override func draw(_ dirtyRect: NSRect) {
