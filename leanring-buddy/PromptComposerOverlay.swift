@@ -13,6 +13,175 @@ private final class FocusableOverlayPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+private final class PromptComposerResizeContainerView: NSView {
+    private let resizeHitThickness: CGFloat = 10
+    private var resizeTrackingArea: NSTrackingArea?
+    private var activeResizeEdges: ResizeEdges = []
+    private var resizeStartMouseLocationInScreen: CGPoint = .zero
+    private var resizeStartWindowFrame: CGRect = .zero
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+
+        if let resizeTrackingArea {
+            removeTrackingArea(resizeTrackingArea)
+        }
+
+        let trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.activeAlways, .inVisibleRect, .mouseMoved, .cursorUpdate],
+            owner: self
+        )
+        addTrackingArea(trackingArea)
+        resizeTrackingArea = trackingArea
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if !resizeEdges(at: point).isEmpty {
+            return self
+        }
+
+        return super.hitTest(point)
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        updateResizeCursor(for: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        updateResizeCursor(for: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let resizeEdges = resizeEdges(at: convert(event.locationInWindow, from: nil))
+        guard !resizeEdges.isEmpty, let window else {
+            super.mouseDown(with: event)
+            return
+        }
+
+        activeResizeEdges = resizeEdges
+        resizeStartMouseLocationInScreen = NSEvent.mouseLocation
+        resizeStartWindowFrame = window.frame
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard !activeResizeEdges.isEmpty, let window else {
+            super.mouseDragged(with: event)
+            return
+        }
+
+        let currentMouseLocationInScreen = NSEvent.mouseLocation
+        let mouseDelta = CGPoint(
+            x: currentMouseLocationInScreen.x - resizeStartMouseLocationInScreen.x,
+            y: currentMouseLocationInScreen.y - resizeStartMouseLocationInScreen.y
+        )
+
+        window.setFrame(
+            resizedWindowFrame(
+                from: resizeStartWindowFrame,
+                mouseDelta: mouseDelta,
+                resizeEdges: activeResizeEdges,
+                minimumSize: window.minSize,
+                maximumSize: window.maxSize
+            ),
+            display: true
+        )
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        activeResizeEdges = []
+    }
+
+    private func updateResizeCursor(for point: NSPoint) {
+        let resizeEdges = resizeEdges(at: point)
+
+        if resizeEdges.contains(.left) || resizeEdges.contains(.right) {
+            NSCursor.resizeLeftRight.set()
+        } else if resizeEdges.contains(.top) || resizeEdges.contains(.bottom) {
+            NSCursor.resizeUpDown.set()
+        } else {
+            NSCursor.arrow.set()
+        }
+    }
+
+    private func resizeEdges(at point: NSPoint) -> ResizeEdges {
+        var resizeEdges: ResizeEdges = []
+
+        if point.x <= resizeHitThickness {
+            resizeEdges.insert(.left)
+        } else if point.x >= bounds.width - resizeHitThickness {
+            resizeEdges.insert(.right)
+        }
+
+        if point.y <= resizeHitThickness {
+            resizeEdges.insert(.bottom)
+        } else if point.y >= bounds.height - resizeHitThickness {
+            resizeEdges.insert(.top)
+        }
+
+        return resizeEdges
+    }
+
+    private func resizedWindowFrame(
+        from originalWindowFrame: CGRect,
+        mouseDelta: CGPoint,
+        resizeEdges: ResizeEdges,
+        minimumSize: CGSize,
+        maximumSize: CGSize
+    ) -> CGRect {
+        var resizedWindowFrame = originalWindowFrame
+
+        if resizeEdges.contains(.left) {
+            let resizedWidth = clamped(
+                originalWindowFrame.width - mouseDelta.x,
+                minimum: minimumSize.width,
+                maximum: maximumSize.width
+            )
+            resizedWindowFrame.origin.x = originalWindowFrame.maxX - resizedWidth
+            resizedWindowFrame.size.width = resizedWidth
+        } else if resizeEdges.contains(.right) {
+            resizedWindowFrame.size.width = clamped(
+                originalWindowFrame.width + mouseDelta.x,
+                minimum: minimumSize.width,
+                maximum: maximumSize.width
+            )
+        }
+
+        if resizeEdges.contains(.bottom) {
+            let resizedHeight = clamped(
+                originalWindowFrame.height - mouseDelta.y,
+                minimum: minimumSize.height,
+                maximum: maximumSize.height
+            )
+            resizedWindowFrame.origin.y = originalWindowFrame.maxY - resizedHeight
+            resizedWindowFrame.size.height = resizedHeight
+        } else if resizeEdges.contains(.top) {
+            resizedWindowFrame.size.height = clamped(
+                originalWindowFrame.height + mouseDelta.y,
+                minimum: minimumSize.height,
+                maximum: maximumSize.height
+            )
+        }
+
+        return resizedWindowFrame
+    }
+
+    private func clamped(_ value: CGFloat, minimum: CGFloat, maximum: CGFloat) -> CGFloat {
+        min(max(value, minimum), maximum)
+    }
+
+    private struct ResizeEdges: OptionSet {
+        let rawValue: Int
+
+        static let left = ResizeEdges(rawValue: 1 << 0)
+        static let right = ResizeEdges(rawValue: 1 << 1)
+        static let top = ResizeEdges(rawValue: 1 << 2)
+        static let bottom = ResizeEdges(rawValue: 1 << 3)
+    }
+}
+
 @MainActor
 final class PromptComposerPanelManager: NSObject, NSWindowDelegate {
     private var panel: NSPanel?
@@ -58,12 +227,16 @@ final class PromptComposerPanelManager: NSObject, NSWindowDelegate {
 
     private func createPanel() {
         let rootView = PromptComposerView(companionManager: companionManager)
-            .frame(width: panelSize.width, height: panelSize.height)
 
         let hostingView = NSHostingView(rootView: rootView)
         hostingView.frame = NSRect(origin: .zero, size: panelSize)
+        hostingView.autoresizingMask = [.width, .height]
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+
+        let resizeContainerView = PromptComposerResizeContainerView(frame: NSRect(origin: .zero, size: panelSize))
+        resizeContainerView.autoresizesSubviews = true
+        resizeContainerView.addSubview(hostingView)
 
         let promptPanel = FocusableOverlayPanel(
             contentRect: NSRect(origin: .zero, size: panelSize),
@@ -85,7 +258,7 @@ final class PromptComposerPanelManager: NSObject, NSWindowDelegate {
         promptPanel.minSize = minimumPanelSize
         promptPanel.maxSize = maximumPanelSize
         promptPanel.delegate = self
-        promptPanel.contentView = hostingView
+        promptPanel.contentView = resizeContainerView
 
         self.panel = promptPanel
     }
@@ -130,6 +303,17 @@ final class PromptComposerPanelManager: NSObject, NSWindowDelegate {
 private struct PromptComposerView: View {
     @ObservedObject var companionManager: CompanionManager
     @ObservedObject private var settingsStore: ClickySettingsStore
+    @State private var conversationHistorySidebarWidth: CGFloat = 236
+    @State private var conversationHistorySidebarWidthAtDragStart: CGFloat?
+    @State private var preferredConversationDetailCardHeight: CGFloat?
+    @State private var conversationDetailCardHeightAtDragStart: CGFloat?
+
+    private let splitHandleThickness: CGFloat = 10
+    private let minimumComposerEditorHeight: CGFloat = 36
+    private let minimumConversationDetailCardHeight: CGFloat = 96
+    private let minimumConversationHistorySidebarWidth: CGFloat = 180
+    private let maximumConversationHistorySidebarWidth: CGFloat = 360
+    private let minimumComposerMainColumnWidth: CGFloat = 360
 
     init(companionManager: CompanionManager) {
         self.companionManager = companionManager
@@ -140,17 +324,7 @@ private struct PromptComposerView: View {
         VStack(alignment: .leading, spacing: 12) {
             composerHeader
 
-            HStack(alignment: .top, spacing: 12) {
-                ConversationHistorySidebar(companionManager: companionManager)
-                    .frame(width: 236)
-                    .frame(maxHeight: .infinity)
-
-                VStack(alignment: .leading, spacing: 12) {
-                    composerPrimaryContent
-                    composerFooter
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            composerMainContent
         }
         .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -163,6 +337,51 @@ private struct PromptComposerView: View {
                 )
                 .shadow(color: Color.black.opacity(0.35), radius: 18, x: 0, y: 10)
         )
+    }
+
+    private var composerMainContent: some View {
+        GeometryReader { geometryProxy in
+            HStack(alignment: .top, spacing: 0) {
+                ConversationHistorySidebar(companionManager: companionManager)
+                    .frame(
+                        width: clampedConversationHistorySidebarWidth(
+                            conversationHistorySidebarWidth,
+                            availableWidth: geometryProxy.size.width
+                        )
+                    )
+                    .frame(maxHeight: .infinity)
+
+                ComposerSplitHandle(
+                    axis: .vertical,
+                    onDragChanged: { dragTranslation in
+                        if conversationHistorySidebarWidthAtDragStart == nil {
+                            conversationHistorySidebarWidthAtDragStart = conversationHistorySidebarWidth
+                        }
+
+                        let startingSidebarWidth = conversationHistorySidebarWidthAtDragStart ?? conversationHistorySidebarWidth
+                        conversationHistorySidebarWidth = clampedConversationHistorySidebarWidth(
+                            startingSidebarWidth + dragTranslation.width,
+                            availableWidth: geometryProxy.size.width
+                        )
+                    },
+                    onDragEnded: {
+                        conversationHistorySidebarWidthAtDragStart = nil
+                    }
+                )
+                    .frame(width: splitHandleThickness)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    composerPrimaryContent
+                    composerFooter
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(
+                width: geometryProxy.size.width,
+                height: geometryProxy.size.height,
+                alignment: .topLeading
+            )
+        }
     }
 
     private var composerHeader: some View {
@@ -212,27 +431,132 @@ private struct PromptComposerView: View {
                 SessionRestoreDecisionCard(companionManager: companionManager)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                VStack(alignment: .leading, spacing: 12) {
-                    if let currentConversationTurn = companionManager.currentConversationTurn,
-                       companionManager.isCurrentConversationTurnSelected {
-                        CurrentConversationTurnDetailCard(
-                            currentConversationTurn: currentConversationTurn,
-                            onClose: companionManager.clearSelectedConversationHistorySelection
-                        )
-                    } else if let selectedConversationTurnDetail = companionManager.selectedArchivedConversationTurnDetail,
-                              let selectedConversationTurnNumber = companionManager.selectedArchivedConversationTurnNumber {
-                        ConversationTurnDetailCard(
-                            selectedConversationTurnNumber: selectedConversationTurnNumber,
-                            selectedConversationTurnDetail: selectedConversationTurnDetail,
-                            onClose: companionManager.clearSelectedConversationHistorySelection
-                        )
-                    }
+                GeometryReader { geometryProxy in
+                    VStack(alignment: .leading, spacing: 0) {
+                        if let conversationTurnDetailDisplay {
+                            ConversationTurnDetailCard(
+                                detailDisplay: conversationTurnDetailDisplay,
+                                onClose: companionManager.clearSelectedConversationHistorySelection
+                            )
+                            .frame(
+                                height: conversationDetailCardHeight(
+                                    availableHeight: geometryProxy.size.height
+                                )
+                            )
 
-                    composerEditor
+                            ComposerSplitHandle(
+                                axis: .horizontal,
+                                onDragChanged: { dragTranslation in
+                                    if conversationDetailCardHeightAtDragStart == nil {
+                                        conversationDetailCardHeightAtDragStart = conversationDetailCardHeight(
+                                            availableHeight: geometryProxy.size.height
+                                        )
+                                    }
+
+                                    let startingDetailCardHeight = conversationDetailCardHeightAtDragStart
+                                        ?? conversationDetailCardHeight(availableHeight: geometryProxy.size.height)
+                                    preferredConversationDetailCardHeight = clampedConversationDetailCardHeight(
+                                        startingDetailCardHeight + dragTranslation.height,
+                                        availableHeight: geometryProxy.size.height
+                                    )
+                                },
+                                onDragEnded: {
+                                    conversationDetailCardHeightAtDragStart = nil
+                                }
+                            )
+                                .frame(height: splitHandleThickness)
+                        }
+
+                        composerEditor
+                            .frame(minHeight: minimumComposerEditorHeight)
+                    }
+                    .frame(
+                        width: geometryProxy.size.width,
+                        height: geometryProxy.size.height,
+                        alignment: .topLeading
+                    )
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+    }
+
+    private func clampedConversationHistorySidebarWidth(
+        _ proposedSidebarWidth: CGFloat,
+        availableWidth: CGFloat
+    ) -> CGFloat {
+        let maximumSidebarWidthAllowedByMainColumn = availableWidth
+            - splitHandleThickness
+            - minimumComposerMainColumnWidth
+        let maximumUsableSidebarWidth = max(0, maximumSidebarWidthAllowedByMainColumn)
+        let effectiveMaximumSidebarWidth = min(
+            maximumConversationHistorySidebarWidth,
+            max(minimumConversationHistorySidebarWidth, maximumUsableSidebarWidth)
+        )
+        let effectiveMinimumSidebarWidth = min(
+            minimumConversationHistorySidebarWidth,
+            effectiveMaximumSidebarWidth
+        )
+
+        return min(
+            max(proposedSidebarWidth, effectiveMinimumSidebarWidth),
+            effectiveMaximumSidebarWidth
+        )
+    }
+
+    private func conversationDetailCardHeight(availableHeight: CGFloat) -> CGFloat {
+        if let preferredConversationDetailCardHeight {
+            return clampedConversationDetailCardHeight(
+                preferredConversationDetailCardHeight,
+                availableHeight: availableHeight
+            )
+        }
+
+        return maximumConversationDetailCardHeight(availableHeight: availableHeight)
+    }
+
+    private func clampedConversationDetailCardHeight(
+        _ proposedDetailCardHeight: CGFloat,
+        availableHeight: CGFloat
+    ) -> CGFloat {
+        let effectiveMaximumDetailCardHeight = maximumConversationDetailCardHeight(
+            availableHeight: availableHeight
+        )
+        let effectiveMinimumDetailCardHeight = min(
+            minimumConversationDetailCardHeight,
+            effectiveMaximumDetailCardHeight
+        )
+
+        return min(
+            max(proposedDetailCardHeight, effectiveMinimumDetailCardHeight),
+            effectiveMaximumDetailCardHeight
+        )
+    }
+
+    private func maximumConversationDetailCardHeight(availableHeight: CGFloat) -> CGFloat {
+        max(
+            0,
+            availableHeight
+                - minimumComposerEditorHeight
+                - splitHandleThickness
+        )
+    }
+
+    private var conversationTurnDetailDisplay: ConversationTurnDetailDisplay? {
+        if let currentConversationTurn = companionManager.currentConversationTurn,
+           companionManager.isCurrentConversationTurnSelected {
+            return ConversationTurnDetailDisplay(currentConversationTurn: currentConversationTurn)
+        }
+
+        if let selectedConversationTurnDetail = companionManager.selectedArchivedConversationTurnDetail,
+           let selectedConversationTurnNumber = companionManager.selectedArchivedConversationTurnNumber {
+            return ConversationTurnDetailDisplay(
+                selectedConversationTurnNumber: selectedConversationTurnNumber,
+                selectedConversationTurnDetail: selectedConversationTurnDetail
+            )
+        }
+
+        return nil
     }
 
     private var composerEditor: some View {
@@ -327,6 +651,113 @@ private struct PromptComposerView: View {
                 .font(.system(size: 12))
                 .foregroundColor(DS.Colors.textTertiary)
         }
+    }
+}
+
+private enum ComposerSplitHandleAxis {
+    case vertical
+    case horizontal
+
+    var cursor: NSCursor {
+        switch self {
+        case .vertical:
+            return .resizeLeftRight
+        case .horizontal:
+            return .resizeUpDown
+        }
+    }
+}
+
+private struct ComposerSplitHandle: View {
+    let axis: ComposerSplitHandleAxis
+    let onDragChanged: (CGSize) -> Void
+    let onDragEnded: () -> Void
+
+    var body: some View {
+        ComposerSplitHandleRepresentable(
+            axis: axis,
+            onDragChanged: onDragChanged,
+            onDragEnded: onDragEnded
+        )
+    }
+}
+
+private struct ComposerSplitHandleRepresentable: NSViewRepresentable {
+    let axis: ComposerSplitHandleAxis
+    let onDragChanged: (CGSize) -> Void
+    let onDragEnded: () -> Void
+
+    func makeNSView(context: Context) -> ComposerSplitHandleNSView {
+        let view = ComposerSplitHandleNSView()
+        view.axis = axis
+        view.onDragChanged = onDragChanged
+        view.onDragEnded = onDragEnded
+        return view
+    }
+
+    func updateNSView(_ nsView: ComposerSplitHandleNSView, context: Context) {
+        nsView.axis = axis
+        nsView.onDragChanged = onDragChanged
+        nsView.onDragEnded = onDragEnded
+        nsView.needsDisplay = true
+        nsView.window?.invalidateCursorRects(for: nsView)
+    }
+}
+
+private final class ComposerSplitHandleNSView: NSView {
+    var axis: ComposerSplitHandleAxis = .vertical
+    var onDragChanged: ((CGSize) -> Void)?
+    var onDragEnded: (() -> Void)?
+    private var dragStartLocationInWindow: CGPoint?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: axis.cursor)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        let markerSize = CGSize(
+            width: axis == .vertical ? 1 : min(36, bounds.width),
+            height: axis == .vertical ? min(36, bounds.height) : 1
+        )
+        let markerRect = CGRect(
+            x: bounds.midX - markerSize.width / 2,
+            y: bounds.midY - markerSize.height / 2,
+            width: markerSize.width,
+            height: markerSize.height
+        )
+
+        NSColor(DS.Colors.borderSubtle)
+            .withAlphaComponent(0.65)
+            .setFill()
+        NSBezierPath(roundedRect: markerRect, xRadius: 1, yRadius: 1).fill()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        dragStartLocationInWindow = event.locationInWindow
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let dragStartLocationInWindow else {
+            return
+        }
+
+        let currentLocationInWindow = event.locationInWindow
+        onDragChanged?(
+            CGSize(
+                width: currentLocationInWindow.x - dragStartLocationInWindow.x,
+                height: dragStartLocationInWindow.y - currentLocationInWindow.y
+            )
+        )
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        dragStartLocationInWindow = nil
+        onDragEnded?()
     }
 }
 
@@ -625,178 +1056,285 @@ private struct ConversationHistorySpeakerPreview: View {
     }
 }
 
-private struct CurrentConversationTurnDetailCard: View {
-    let currentConversationTurn: CurrentConversationTurn
+private struct ConversationTurnDetailCard: View {
+    let detailDisplay: ConversationTurnDetailDisplay
     let onClose: () -> Void
 
-    private var subtitleText: String {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(detailDisplay.titleText)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(DS.Colors.textPrimary)
+
+                    Text(detailDisplay.subtitleText)
+                        .font(.system(size: 11))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+
+                Spacer()
+
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .frame(width: 20, height: 20)
+                        .background(
+                            Circle()
+                                .fill(Color.white.opacity(0.08))
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+
+            ConversationTurnTranscriptTextView(
+                transcriptIdentity: detailDisplay.transcriptIdentity,
+                userPromptText: detailDisplay.userPromptText,
+                assistantResponseText: detailDisplay.assistantResponseText,
+                assistantResponseTone: detailDisplay.assistantResponseTone
+            )
+            .frame(maxHeight: .infinity)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(DS.Colors.surface2)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle.opacity(0.75), lineWidth: 1)
+                )
+        )
+    }
+}
+
+private struct ConversationTurnDetailDisplay {
+    let transcriptIdentity: String
+    let titleText: String
+    let subtitleText: String
+    let userPromptText: String
+    let assistantResponseText: String
+    let assistantResponseTone: ConversationTurnTranscriptResponseTone
+
+    init(currentConversationTurn: CurrentConversationTurn) {
+        transcriptIdentity = "current-turn"
+        titleText = "Current Turn"
+        userPromptText = currentConversationTurn.promptText
+        assistantResponseText = currentConversationTurn.responseText
+
         switch currentConversationTurn.phase {
         case .processing:
-            return "Preparing the screenshot request for this unsaved turn."
+            subtitleText = "Preparing the screenshot request for this unsaved turn."
+            assistantResponseTone = .normal
         case .streaming:
-            return "Streaming the latest reply. This turn will join session history only after it finishes."
+            subtitleText = "Streaming the latest reply. This turn will join session history only after it finishes."
+            assistantResponseTone = .normal
         case .completed:
-            return "Reply received, but this turn is still temporary until it can be saved."
+            subtitleText = "Reply received, but this turn is still temporary until it can be saved."
+            assistantResponseTone = .normal
         case .failed:
-            return "This turn failed and was not added to session history."
+            subtitleText = "This turn failed and was not added to session history."
+            assistantResponseTone = .error
         }
     }
 
-    private var responseSpeakerColor: Color {
-        switch currentConversationTurn.phase {
-        case .failed:
-            return DS.Colors.destructiveText
-        default:
-            return DS.Colors.info
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Current Turn")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(DS.Colors.textPrimary)
-
-                    Text(subtitleText)
-                        .font(.system(size: 11))
-                        .foregroundColor(DS.Colors.textTertiary)
-                }
-
-                Spacer()
-
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(DS.Colors.textTertiary)
-                        .frame(width: 20, height: 20)
-                        .background(
-                            Circle()
-                                .fill(Color.white.opacity(0.08))
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-            }
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    ConversationTurnDetailSection(
-                        speakerLabel: "You",
-                        contentText: currentConversationTurn.promptText,
-                        speakerColor: DS.Colors.accentText
-                    )
-
-                    Divider()
-                        .overlay(DS.Colors.borderSubtle.opacity(0.6))
-
-                    ConversationTurnDetailSection(
-                        speakerLabel: "Clicky",
-                        contentText: currentConversationTurn.responseText,
-                        speakerColor: responseSpeakerColor
-                    )
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(height: 180)
-        }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(DS.Colors.surface2)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(DS.Colors.borderSubtle.opacity(0.75), lineWidth: 1)
-                )
-        )
+    init(
+        selectedConversationTurnNumber: Int,
+        selectedConversationTurnDetail: ClickyConversationTurnRecord
+    ) {
+        transcriptIdentity = selectedConversationTurnDetail.turnID.uuidString
+        titleText = "Turn \(selectedConversationTurnNumber)"
+        subtitleText = "Reviewing the full saved exchange for this context turn."
+        userPromptText = selectedConversationTurnDetail.userPromptText
+        assistantResponseText = selectedConversationTurnDetail.assistantResponseText
+        assistantResponseTone = .normal
     }
 }
 
-private struct ConversationTurnDetailCard: View {
-    let selectedConversationTurnNumber: Int
-    let selectedConversationTurnDetail: ClickyConversationTurnRecord
-    let onClose: () -> Void
+private enum ConversationTurnTranscriptResponseTone: Equatable {
+    case normal
+    case error
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Turn \(selectedConversationTurnNumber)")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(DS.Colors.textPrimary)
-
-                    Text("Reviewing the full saved exchange for this context turn.")
-                        .font(.system(size: 11))
-                        .foregroundColor(DS.Colors.textTertiary)
-                }
-
-                Spacer()
-
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(DS.Colors.textTertiary)
-                        .frame(width: 20, height: 20)
-                        .background(
-                            Circle()
-                                .fill(Color.white.opacity(0.08))
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-            }
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    ConversationTurnDetailSection(
-                        speakerLabel: "You",
-                        contentText: selectedConversationTurnDetail.userPromptText,
-                        speakerColor: DS.Colors.accentText
-                    )
-
-                    Divider()
-                        .overlay(DS.Colors.borderSubtle.opacity(0.6))
-
-                    ConversationTurnDetailSection(
-                        speakerLabel: "Clicky",
-                        contentText: selectedConversationTurnDetail.assistantResponseText,
-                        speakerColor: DS.Colors.info
-                    )
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(height: 180)
+    var color: NSColor {
+        switch self {
+        case .normal:
+            return NSColor(DS.Colors.info)
+        case .error:
+            return NSColor(DS.Colors.destructiveText)
         }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(DS.Colors.surface2)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(DS.Colors.borderSubtle.opacity(0.75), lineWidth: 1)
-                )
-        )
     }
 }
 
-private struct ConversationTurnDetailSection: View {
-    let speakerLabel: String
-    let contentText: String
-    let speakerColor: Color
+private struct ConversationTurnTranscriptTextView: NSViewRepresentable {
+    let transcriptIdentity: String
+    let userPromptText: String
+    let assistantResponseText: String
+    let assistantResponseTone: ConversationTurnTranscriptResponseTone
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(speakerLabel)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(speakerColor)
+    private var plainTranscriptText: String {
+        "You\n\(userPromptText)\n\nClicky\n\(assistantResponseText)"
+    }
 
-            Text(contentText)
-                .font(.system(size: 12))
-                .foregroundColor(DS.Colors.textPrimary)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .noBorder
+
+        let textView = NSTextView()
+        textView.drawsBackground = false
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = true
+        textView.importsGraphics = false
+        textView.allowsUndo = false
+        textView.textContainerInset = NSSize(width: 0, height: 2)
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(
+            width: scrollView.contentSize.width,
+            height: .greatestFiniteMagnitude
+        )
+        textView.insertionPointColor = NSColor(DS.Colors.textPrimary)
+
+        scrollView.documentView = textView
+        updateTextView(textView, in: scrollView, context: context)
+        return scrollView
+    }
+
+    func updateNSView(_ nsView: NSScrollView, context: Context) {
+        guard let textView = nsView.documentView as? NSTextView else { return }
+        updateTextView(textView, in: nsView, context: context)
+    }
+
+    private func updateTextView(
+        _ textView: NSTextView,
+        in scrollView: NSScrollView,
+        context: Context
+    ) {
+        let updatedPlainTranscriptText = plainTranscriptText
+        let isFirstTranscriptRender = context.coordinator.lastTranscriptIdentity == nil
+        let didTranscriptChange = context.coordinator.lastPlainTranscriptText != updatedPlainTranscriptText
+            || context.coordinator.lastAssistantResponseTone != assistantResponseTone
+        let didSwitchToDifferentTranscript = context.coordinator.lastTranscriptIdentity != nil
+            && context.coordinator.lastTranscriptIdentity != transcriptIdentity
+            && context.coordinator.lastPlainTranscriptText != updatedPlainTranscriptText
+
+        guard didTranscriptChange else {
+            context.coordinator.lastTranscriptIdentity = transcriptIdentity
+            return
         }
+
+        let clipView = scrollView.contentView
+        let previousVisibleOrigin = clipView.bounds.origin
+
+        textView.textStorage?.setAttributedString(attributedTranscript())
+        textView.textContainer?.containerSize = NSSize(
+            width: scrollView.contentSize.width,
+            height: .greatestFiniteMagnitude
+        )
+
+        context.coordinator.lastTranscriptIdentity = transcriptIdentity
+        context.coordinator.lastPlainTranscriptText = updatedPlainTranscriptText
+        context.coordinator.lastAssistantResponseTone = assistantResponseTone
+
+        DispatchQueue.main.async {
+            if isFirstTranscriptRender || didSwitchToDifferentTranscript {
+                clipView.scroll(to: .zero)
+            } else {
+                clipView.scroll(to: clampedVisibleOrigin(previousVisibleOrigin, in: scrollView))
+            }
+            scrollView.reflectScrolledClipView(clipView)
+        }
+    }
+
+    private func attributedTranscript() -> NSAttributedString {
+        let transcript = NSMutableAttributedString()
+        let speakerParagraphStyle = NSMutableParagraphStyle()
+        speakerParagraphStyle.lineSpacing = 0
+        speakerParagraphStyle.paragraphSpacing = 0
+
+        let bodyParagraphStyle = NSMutableParagraphStyle()
+        bodyParagraphStyle.lineSpacing = 0
+        bodyParagraphStyle.paragraphSpacing = 0
+
+        append(
+            "You\n",
+            to: transcript,
+            font: .systemFont(ofSize: 11, weight: .semibold),
+            color: NSColor(DS.Colors.accentText),
+            paragraphStyle: speakerParagraphStyle
+        )
+        append(
+            userPromptText + "\n\n",
+            to: transcript,
+            font: .systemFont(ofSize: 12),
+            color: NSColor(DS.Colors.textPrimary),
+            paragraphStyle: bodyParagraphStyle
+        )
+        append(
+            "Clicky\n",
+            to: transcript,
+            font: .systemFont(ofSize: 11, weight: .semibold),
+            color: assistantResponseTone.color,
+            paragraphStyle: speakerParagraphStyle
+        )
+        append(
+            assistantResponseText,
+            to: transcript,
+            font: .systemFont(ofSize: 12),
+            color: NSColor(DS.Colors.textPrimary),
+            paragraphStyle: bodyParagraphStyle
+        )
+
+        return transcript
+    }
+
+    private func append(
+        _ string: String,
+        to transcript: NSMutableAttributedString,
+        font: NSFont,
+        color: NSColor,
+        paragraphStyle: NSParagraphStyle
+    ) {
+        transcript.append(
+            NSAttributedString(
+                string: string,
+                attributes: [
+                    .font: font,
+                    .foregroundColor: color,
+                    .paragraphStyle: paragraphStyle
+                ]
+            )
+        )
+    }
+
+    private func clampedVisibleOrigin(_ visibleOrigin: CGPoint, in scrollView: NSScrollView) -> CGPoint {
+        guard let documentView = scrollView.documentView else {
+            return .zero
+        }
+
+        let maximumY = max(0, documentView.bounds.height - scrollView.contentView.bounds.height)
+        return CGPoint(
+            x: 0,
+            y: min(max(0, visibleOrigin.y), maximumY)
+        )
+    }
+
+    final class Coordinator {
+        var lastTranscriptIdentity: String?
+        var lastPlainTranscriptText: String?
+        var lastAssistantResponseTone: ConversationTurnTranscriptResponseTone?
     }
 }
 

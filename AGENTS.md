@@ -57,8 +57,8 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~50 | Menu bar app entry point. Creates `CompanionManager`, launches the cursor overlay, and auto-opens the settings panel when configuration is incomplete. |
-| `CompanionManager.swift` | ~1050 | Central text-first state machine. Owns prompt composer flow, frozen screenshot state, session restore/new-session behavior, temporary current-turn state, JSON-backed archive integration, provider-based response streaming, context-window derivation, and pointing state. |
-| `PromptComposerOverlay.swift` | ~970 | Centered prompt composer overlay built with a key-capable `NSPanel`, a clickable session history sidebar, inline current-turn/detail cards, a restore chooser, and a custom multiline `NSTextView` bridge. |
+| `CompanionManager.swift` | ~1160 | Central text-first state machine. Owns prompt composer flow, frozen screenshot state, session restore/new-session behavior, temporary current-turn state, throttled provider response streaming, context-window derivation, and pointing state. |
+| `PromptComposerOverlay.swift` | ~1520 | Centered prompt composer overlay built with a key-capable resizable `NSPanel`, draggable layout splitters, a clickable session history sidebar, inline current-turn/detail cards, a restore chooser, read-only transcript text views, and a custom multiline `NSTextView` bridge. |
 | `FrozenScreenAnnotationOverlay.swift` | ~482 | Full-screen frozen screenshot annotation layer. Displays the captured screen, handles pen/rectangle/ellipse annotations, and renders annotations into the screenshot sent with a prompt. |
 | `MenuBarPanelManager.swift` | ~236 | NSStatusItem + custom NSPanel lifecycle for the settings dropdown. |
 | `CompanionPanelView.swift` | ~404 | SwiftUI settings panel. Edits provider-specific endpoint URL, API key, model ID, context turn count, the global shortcut, and actions for prompt overrides and session archives, and surfaces Screen Recording status. |

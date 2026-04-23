@@ -120,8 +120,17 @@ final class CompanionManager: ObservableObject {
     private var currentResponseTask: Task<Void, Never>?
     private var promptComposerPreparationTask: Task<Void, Never>?
     private var activeRequestIdentifier: UUID?
+    private var pendingStreamingDisplayUpdate: PendingStreamingDisplayUpdate?
+    private var scheduledStreamingDisplayUpdateTask: Task<Void, Never>?
+    private var lastStreamingDisplayUpdateDate = Date.distantPast
     private var registeredShortcutHandler = false
     private var cancellables = Set<AnyCancellable>()
+
+    private struct PendingStreamingDisplayUpdate {
+        let requestIdentifier: UUID
+        let promptText: String
+        let responseText: String
+    }
 
     convenience init() {
         self.init(
@@ -779,6 +788,85 @@ final class CompanionManager: ObservableObject {
         interfaceState = isPromptComposerPresented ? .composing : .idle
     }
 
+    private func resetStreamingDisplayUpdateState() {
+        scheduledStreamingDisplayUpdateTask?.cancel()
+        scheduledStreamingDisplayUpdateTask = nil
+        pendingStreamingDisplayUpdate = nil
+        lastStreamingDisplayUpdateDate = .distantPast
+    }
+
+    private func publishStreamingDisplayUpdate(
+        requestIdentifier: UUID,
+        promptText: String,
+        responseText: String
+    ) {
+        guard activeRequestIdentifier == requestIdentifier else {
+            return
+        }
+
+        if interfaceState == .processing {
+            interfaceState = .streaming
+        }
+
+        let minimumDisplayUpdateInterval: TimeInterval = 0.08
+        let now = Date()
+        let elapsedTimeSinceLastUpdate = now.timeIntervalSince(lastStreamingDisplayUpdateDate)
+
+        if elapsedTimeSinceLastUpdate >= minimumDisplayUpdateInterval {
+            scheduledStreamingDisplayUpdateTask?.cancel()
+            scheduledStreamingDisplayUpdateTask = nil
+            pendingStreamingDisplayUpdate = nil
+            lastStreamingDisplayUpdateDate = now
+            updateCurrentConversationTurnResponse(
+                promptText: promptText,
+                responseText: responseText,
+                phase: .streaming
+            )
+            return
+        }
+
+        pendingStreamingDisplayUpdate = PendingStreamingDisplayUpdate(
+            requestIdentifier: requestIdentifier,
+            promptText: promptText,
+            responseText: responseText
+        )
+
+        guard scheduledStreamingDisplayUpdateTask == nil else {
+            return
+        }
+
+        let remainingDelay = minimumDisplayUpdateInterval - elapsedTimeSinceLastUpdate
+        scheduledStreamingDisplayUpdateTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(remainingDelay * 1_000_000_000))
+            guard !Task.isCancelled else {
+                return
+            }
+
+            guard let pendingStreamingDisplayUpdate else {
+                scheduledStreamingDisplayUpdateTask = nil
+                return
+            }
+
+            guard activeRequestIdentifier == pendingStreamingDisplayUpdate.requestIdentifier else {
+                resetStreamingDisplayUpdateState()
+                return
+            }
+
+            if interfaceState == .processing {
+                interfaceState = .streaming
+            }
+
+            self.pendingStreamingDisplayUpdate = nil
+            scheduledStreamingDisplayUpdateTask = nil
+            lastStreamingDisplayUpdateDate = Date()
+            updateCurrentConversationTurnResponse(
+                promptText: pendingStreamingDisplayUpdate.promptText,
+                responseText: pendingStreamingDisplayUpdate.responseText,
+                phase: .streaming
+            )
+        }
+    }
+
     func currentAIRequestConfiguration() -> AIRequestConfiguration? {
         guard let endpointURL = settingsStore.resolvedEndpointURL() else {
             return nil
@@ -794,6 +882,7 @@ final class CompanionManager: ObservableObject {
 
     private func sendPromptWithFrozenScreenshot(prompt: String) {
         currentResponseTask?.cancel()
+        resetStreamingDisplayUpdateState()
         clearDetectedElementLocation()
         updateCurrentConversationTurnResponse(
             promptText: prompt,
@@ -856,19 +945,17 @@ final class CompanionManager: ObservableObject {
                     prompt,
                     { [weak self] accumulatedText in
                         guard let self else { return }
-                        if self.interfaceState == .processing {
-                            self.interfaceState = .streaming
-                        }
                         let displayText = Self.textForDisplayDuringStreaming(accumulatedText)
-                        self.updateCurrentConversationTurnResponse(
+                        self.publishStreamingDisplayUpdate(
+                            requestIdentifier: requestIdentifier,
                             promptText: prompt,
-                            responseText: displayText,
-                            phase: .streaming
+                            responseText: displayText
                         )
                     }
                 )
 
                 guard !Task.isCancelled else { return }
+                resetStreamingDisplayUpdateState()
 
                 let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
                 let finalDisplayText = parseResult.displayText.isEmpty ? "(No response text returned.)" : parseResult.displayText
@@ -897,9 +984,11 @@ final class CompanionManager: ObservableObject {
                 }
             } catch is CancellationError {
                 if activeRequestIdentifier == requestIdentifier {
+                    resetStreamingDisplayUpdateState()
                     clearCurrentConversationTurn()
                 }
             } catch {
+                resetStreamingDisplayUpdateState()
                 let errorMessage = "Clicky couldn't get a response.\n\n\(error.localizedDescription)"
                 composerValidationMessage = errorMessage
                 updateCurrentConversationTurnResponse(
